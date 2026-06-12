@@ -110,6 +110,7 @@
                 lastShot = 0;
                 bullets.push({ x: ship.x, y: ship.y - ship.r - 2, vy: -520 });
                 host.vibrate(4);
+                SGSound.play("shoot");
             }
 
             // Bullets
@@ -148,9 +149,11 @@
                             score += rock.r > 26 ? 2 : 1;
                             host.setScore(score);
                             host.vibrate(12);
+                            SGSound.play("hit");
                             rocks.splice(i, 1);
                         } else {
                             explode(b.x, b.y, "#9aa0c3", 5);
+                            SGSound.play("flip");
                         }
                         break;
                     }
@@ -166,6 +169,7 @@
                     explode(ship.x, ship.y, "#39d0ff", 26);
                     explode(ship.x, ship.y, "#ff4d8d", 18);
                     host.vibrate([80, 50, 110]);
+                    SGSound.play("explode");
                     setTimeout(() => host.gameOver(score), 700);
                     break;
                 }

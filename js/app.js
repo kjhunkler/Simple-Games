@@ -8,7 +8,7 @@
         "\u{1F480}", "\u{1F47D}", "\u{1F916}", "\u{1F9A9}", "\u{1F996}", "\u{1F409}"
     ];
 
-    const GAME_ORDER = ["snake", "astro", "piestack"];
+    const GAME_ORDER = ["snake", "astro", "piestack", "flappy", "moles", "memory"];
 
     const $ = (sel) => document.querySelector(sel);
 
@@ -210,6 +210,7 @@
             const isNewBest = profile ? SGStorage.submitScore(profile.id, currentGameDef.id, score) : false;
             const best = profile ? SGStorage.getBestScore(profile.id, currentGameDef.id) : score;
 
+            SGSound.play(isNewBest ? "highscore" : "gameover");
             $("#overlay-emoji").textContent = isNewBest ? "\u{1F3C6}" : currentGameDef.emoji;
             $("#overlay-title").textContent = isNewBest ? "New Best!" : "Game Over";
             $("#overlay-text").textContent =
@@ -224,6 +225,8 @@
         if (!def) return;
         currentGameDef = def;
 
+        SGSound.unlock();
+        SGSound.play("tap");
         $("#game-title").textContent = def.emoji + " " + def.name;
         gameHost.setScore(0);
         updateGameBestLabel();
@@ -296,8 +299,25 @@
         $("#game-overlay").classList.add("hidden");
         updateGameBestLabel();
         gameHost.setScore(0);
+        SGSound.play("tap");
         if (currentGame) currentGame.restart();
     });
+
+    /* ---------- Sound toggle ---------- */
+    function renderSoundButton() {
+        $("#btn-sound").textContent = SGSound.isEnabled() ? "\u{1F50A}" : "\u{1F507}";
+    }
+    $("#btn-sound").addEventListener("click", () => {
+        const on = SGSound.toggle();
+        renderSoundButton();
+        if (on) SGSound.play("tap");
+        toast(on ? "Sound on" : "Sound off");
+    });
+    renderSoundButton();
+
+    // Mobile browsers require a user gesture before audio can start.
+    document.addEventListener("touchstart", () => SGSound.unlock(), { once: true, passive: true });
+    document.addEventListener("mousedown", () => SGSound.unlock(), { once: true });
 
     // Prevent double-tap zoom on iOS.
     let lastTouchEnd = 0;

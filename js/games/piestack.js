@@ -85,6 +85,7 @@
                 mover.dropping = true;
                 mover.dropY = pieScreenY(mover.y);
                 host.vibrate([70, 40, 90]);
+                SGSound.play("miss");
                 setTimeout(() => host.gameOver(score), 800);
                 return;
             }
@@ -104,11 +105,13 @@
                 mover.w = top.w;
                 score += 2;
                 host.vibrate([15, 30, 15]);
+                SGSound.play("perfect");
             } else {
                 mover.x = overlapStart;
                 mover.w = overlap;
                 score += 1;
                 host.vibrate(15);
+                SGSound.play("drop");
             }
             host.setScore(score);
 

@@ -1,5 +1,5 @@
 /* ============ Simple Games — service worker ============ */
-const CACHE_NAME = "simple-games-v1";
+const CACHE_NAME = "simple-games-v2";
 
 const ASSETS = [
     "./",
@@ -7,10 +7,14 @@ const ASSETS = [
     "./manifest.json",
     "./css/app.css",
     "./js/storage.js",
+    "./js/sound.js",
     "./js/app.js",
     "./js/games/snake.js",
     "./js/games/astro.js",
     "./js/games/piestack.js",
+    "./js/games/flappy.js",
+    "./js/games/moles.js",
+    "./js/games/memory.js",
     "./icons/icon.svg",
     "./icons/icon-maskable.svg"
 ];

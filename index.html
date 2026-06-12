@@ -46,11 +46,14 @@
         <section id="screen-home" class="screen hidden">
             <header class="screen-header row space-between">
                 <h1 class="app-title small">Simple Games</h1>
-                <button id="btn-switch-profile" class="profile-chip" aria-label="Switch player">
-                    <span id="chip-avatar" class="chip-avatar"></span>
-                    <span id="chip-name"></span>
-                    <span class="chip-switch">&#8645;</span>
-                </button>
+                <div class="header-actions">
+                    <button id="btn-sound" class="btn btn-icon btn-ghost" aria-label="Toggle sound">&#128266;</button>
+                    <button id="btn-switch-profile" class="profile-chip" aria-label="Switch player">
+                        <span id="chip-avatar" class="chip-avatar"></span>
+                        <span id="chip-name"></span>
+                        <span class="chip-switch">&#8645;</span>
+                    </button>
+                </div>
             </header>
             <h2 class="section-title">Pick a game</h2>
             <div id="game-grid" class="game-grid"></div>
@@ -85,9 +88,13 @@
     <div id="toast" class="toast" role="status"></div>
 
     <script src="js/storage.js"></script>
+    <script src="js/sound.js"></script>
     <script src="js/games/snake.js"></script>
     <script src="js/games/astro.js"></script>
     <script src="js/games/piestack.js"></script>
+    <script src="js/games/flappy.js"></script>
+    <script src="js/games/moles.js"></script>
+    <script src="js/games/memory.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

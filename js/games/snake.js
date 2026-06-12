@@ -65,6 +65,7 @@
                 snake.some(s => s.x === head.x && s.y === head.y)) {
                 alive = false;
                 host.vibrate([60, 40, 80]);
+                SGSound.play("hit");
                 host.gameOver(score);
                 return;
             }
@@ -75,6 +76,7 @@
                 score += 1;
                 host.setScore(score);
                 host.vibrate(15);
+                SGSound.play("eat");
                 tickMs = Math.max(75, 170 - score * 4);
                 spawnFood();
             } else {
