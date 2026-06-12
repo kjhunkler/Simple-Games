@@ -8,7 +8,7 @@
         "\u{1F480}", "\u{1F47D}", "\u{1F916}", "\u{1F9A9}", "\u{1F996}", "\u{1F409}"
     ];
 
-    const GAME_ORDER = ["snake", "astro", "piestack", "flappy", "moles", "memory"];
+    const GAME_ORDER = ["snake", "astro", "piestack", "flappy", "moles", "memory", "echo", "bricks", "hopper", "fruit"];
 
     const $ = (sel) => document.querySelector(sel);
 

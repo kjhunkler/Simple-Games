@@ -86,6 +86,12 @@
             tone(1047, 0.16, { type: "triangle", vol: 0.18, delay: 0.21 });
         },
         flap() { tone(380, 0.09, { type: "sine", slide: 720, vol: 0.12 }); },
+        jump() { tone(300, 0.12, { type: "square", slide: 620, vol: 0.1 }); },
+        bounce() { tone(520, 0.05, { type: "sine", slide: 660, vol: 0.12 }); },
+        note0() { tone(261.63, 0.3, { type: "triangle", vol: 0.22 }); },
+        note1() { tone(329.63, 0.3, { type: "triangle", vol: 0.22 }); },
+        note2() { tone(392.00, 0.3, { type: "triangle", vol: 0.22 }); },
+        note3() { tone(523.25, 0.3, { type: "triangle", vol: 0.22 }); },
         shoot() { tone(820, 0.1, { type: "sawtooth", slide: 160, vol: 0.05 }); },
         hit() { noise(0.07, { filter: 1900, vol: 0.14 }); },
         explode() {
