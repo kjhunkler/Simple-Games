@@ -11,9 +11,33 @@
         { emoji: "\u{1F353}", color: "#ff6f91" }   // strawberry
     ];
 
+    // Rotated emoji text renders as dark silhouettes on some canvas backends,
+    // so emoji are rasterized once (unrotated) and drawn as bitmaps instead.
+    const SPRITE = 128;
+    let fruitSprites = null, skullSprite = null;
+
+    function makeSprite(text, scale) {
+        const c = document.createElement("canvas");
+        c.width = SPRITE;
+        c.height = SPRITE;
+        const sctx = c.getContext("2d");
+        sctx.font = Math.floor(SPRITE * (scale || 0.8)) + "px system-ui, sans-serif";
+        sctx.textAlign = "center";
+        sctx.textBaseline = "middle";
+        sctx.fillText(text, SPRITE / 2, SPRITE / 2 + SPRITE * 0.03);
+        return c;
+    }
+
+    function ensureSprites() {
+        if (fruitSprites) return;
+        fruitSprites = FRUITS.map(f => makeSprite(f.emoji));
+        skullSprite = makeSprite("\u{1F480}", 0.55);
+    }
+
     function create(host) {
         const canvas = host.canvas;
         const ctx = canvas.getContext("2d");
+        ensureSprites();
 
         let W, H;
         let items, chunks, trail, score, lives, alive, started, elapsed;
@@ -51,6 +75,7 @@
             for (let i = 0; i < count; i++) {
                 const isBomb = started && Math.random() < 0.12 + difficulty * 0.1;
                 const x = W * 0.15 + Math.random() * W * 0.7;
+                const fi = Math.floor(Math.random() * FRUITS.length);
                 items.push({
                     x: x,
                     y: H + 40,
@@ -60,7 +85,8 @@
                     rot: Math.random() * Math.PI * 2,
                     vr: (Math.random() - 0.5) * 4,
                     bomb: isBomb,
-                    fruit: FRUITS[Math.floor(Math.random() * FRUITS.length)],
+                    fruit: FRUITS[fi],
+                    sprite: fruitSprites[fi],
                     sliced: false
                 });
             }
@@ -94,7 +120,7 @@
                     vx: item.vx * 30 + dir * (60 + Math.random() * 60),
                     vy: item.vy * 0.2 - 40,
                     rot: item.rot, vr: dir * 6,
-                    emoji: item.fruit.emoji,
+                    sprite: item.sprite,
                     half: dir,
                     r: item.r,
                     life: 1
@@ -211,14 +237,9 @@
                     ctx.save();
                     ctx.translate(c.x, c.y);
                     ctx.rotate(c.rot);
-                    ctx.beginPath();
-                    // Draw half the emoji using a clip.
-                    ctx.rect(c.half < 0 ? -c.r * 1.4 : 0, -c.r * 1.4, c.r * 1.4, c.r * 2.8);
-                    ctx.clip();
-                    ctx.font = Math.floor(c.r * 1.9) + "px system-ui, sans-serif";
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillText(c.emoji, 0, 0);
+                    const d = c.r * 2.4;
+                    if (c.half < 0) ctx.drawImage(c.sprite, 0, 0, SPRITE / 2, SPRITE, -d / 2, -d / 2, d / 2, d);
+                    else ctx.drawImage(c.sprite, SPRITE / 2, 0, SPRITE / 2, SPRITE, 0, -d / 2, d / 2, d);
                     ctx.restore();
                 }
             }
@@ -250,19 +271,14 @@
                     ctx.arc(it.r * 0.7, -it.r * 1.05, 4 + Math.random() * 2.5, 0, Math.PI * 2);
                     ctx.fill();
                     // Skull
-                    ctx.font = Math.floor(it.r * 0.85) + "px system-ui, sans-serif";
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillText("\u{1F480}", 0, 2);
+                    const sd = it.r * 1.1;
+                    ctx.drawImage(skullSprite, -sd / 2, -sd / 2 + 2, sd, sd);
                 } else {
-                    ctx.font = Math.floor(it.r * 1.9) + "px system-ui, sans-serif";
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillText(it.fruit.emoji, 0, 0);
+                    const d = it.r * 2.4;
+                    ctx.drawImage(it.sprite, -d / 2, -d / 2, d, d);
                 }
                 ctx.restore();
             }
-            ctx.textBaseline = "alphabetic";
 
             // Swipe trail
             if (trail.length > 1) {
