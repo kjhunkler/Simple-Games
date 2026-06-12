@@ -327,10 +327,49 @@
         lastTouchEnd = now;
     }, { passive: false });
 
-    /* ---------- Service worker ---------- */
+    /* ---------- Service worker & updates ---------- */
+    function showUpdatePrompt(worker) {
+        const banner = $("#update-banner");
+        banner.classList.remove("hidden");
+        $("#btn-update-now").onclick = () => {
+            banner.classList.add("hidden");
+            // Tell the waiting worker to activate; controllerchange then reloads.
+            worker.postMessage({ type: "SKIP_WAITING" });
+        };
+        $("#btn-update-later").onclick = () => banner.classList.add("hidden");
+    }
+
     if ("serviceWorker" in navigator) {
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+            if (refreshing) return;
+            refreshing = true;
+            location.reload();
+        });
+
         window.addEventListener("load", () => {
-            navigator.serviceWorker.register("./sw.js").catch(err => {
+            navigator.serviceWorker.register("./sw.js").then((reg) => {
+                // An update was already downloaded on a previous visit.
+                if (reg.waiting) showUpdatePrompt(reg.waiting);
+
+                // An update is found while the app is open.
+                reg.addEventListener("updatefound", () => {
+                    const worker = reg.installing;
+                    if (!worker) return;
+                    worker.addEventListener("statechange", () => {
+                        if (worker.state === "installed" && navigator.serviceWorker.controller) {
+                            showUpdatePrompt(worker);
+                        }
+                    });
+                });
+
+                // Re-check whenever the app comes back to the foreground.
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "visible") {
+                        reg.update().catch(() => { /* offline is fine */ });
+                    }
+                });
+            }).catch(err => {
                 console.warn("Service worker registration failed:", err);
             });
         });

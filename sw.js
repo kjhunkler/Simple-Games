@@ -1,5 +1,5 @@
 /* ============ Simple Games — service worker ============ */
-const CACHE_NAME = "simple-games-v2";
+const CACHE_NAME = "simple-games-v3";
 
 const ASSETS = [
     "./",
@@ -23,8 +23,12 @@ self.addEventListener("install", (event) => {
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => cache.addAll(ASSETS))
-            .then(() => self.skipWaiting())
     );
+});
+
+// The page tells us when the user has agreed to switch to the new version.
+self.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {

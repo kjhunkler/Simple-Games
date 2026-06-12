@@ -414,6 +414,43 @@ body {
 
 .overlay-card .btn { width: 100%; }
 
+/* ---------- Update banner ---------- */
+.update-banner {
+    position: fixed;
+    left: 50%;
+    bottom: calc(20px + var(--safe-bottom));
+    transform: translateX(-50%);
+    width: min(420px, calc(100vw - 32px));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--card-2);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    z-index: 60;
+    animation: screen-in 220ms ease-out;
+}
+
+.update-text {
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.update-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.update-banner .btn {
+    min-height: 42px;
+    padding: 0 14px;
+    font-size: 14px;
+}
+
 /* ---------- Toast ---------- */
 .toast {
     position: fixed;
