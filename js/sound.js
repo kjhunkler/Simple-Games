@@ -92,6 +92,10 @@
         note1() { tone(329.63, 0.3, { type: "triangle", vol: 0.22 }); },
         note2() { tone(392.00, 0.3, { type: "triangle", vol: 0.22 }); },
         note3() { tone(523.25, 0.3, { type: "triangle", vol: 0.22 }); },
+        kick() {
+            tone(150, 0.18, { type: "sine", slide: 48, vol: 0.3 });
+        },
+        hat() { noise(0.04, { filterType: "highpass", filter: 6000, vol: 0.1 }); },
         shoot() { tone(820, 0.1, { type: "sawtooth", slide: 160, vol: 0.05 }); },
         hit() { noise(0.07, { filter: 1900, vol: 0.14 }); },
         explode() {
@@ -149,6 +153,14 @@
             const fx = FX[name];
             if (!fx) return;
             try { fx(); } catch (err) { /* sound must never break a game */ }
+        },
+        /** Play an arbitrary melodic note (frequency in Hz). */
+        note(freq, dur, vol) {
+            if (!enabled) return;
+            if (!ensureCtx()) return;
+            try {
+                tone(freq, dur || 0.28, { type: "triangle", vol: vol || 0.22 });
+            } catch (err) { /* sound must never break a game */ }
         }
     };
 })();

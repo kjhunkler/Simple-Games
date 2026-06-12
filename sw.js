@@ -1,5 +1,5 @@
 /* ============ Simple Games — service worker ============ */
-const CACHE_NAME = "simple-games-v5";
+const CACHE_NAME = "simple-games-v6";
 
 const ASSETS = [
     "./",
@@ -21,6 +21,10 @@ const ASSETS = [
     "./js/games/fruit.js",
     "./js/games/tiles.js",
     "./js/games/colorrush.js",
+    "./js/games/beatloop.js",
+    "./js/games/taptiles.js",
+    "./js/games/stopspin.js",
+    "./js/games/lanedash.js",
     "./icons/icon.svg",
     "./icons/icon-maskable.svg"
 ];
@@ -28,7 +32,9 @@ const ASSETS = [
 self.addEventListener("install", (event) => {
     event.waitUntil(
         caches.open(CACHE_NAME)
-            .then((cache) => cache.addAll(ASSETS))
+            // cache: "reload" bypasses the HTTP cache so a new version always
+            // precaches fresh files, not stale copies cached earlier in the session.
+            .then((cache) => cache.addAll(ASSETS.map((url) => new Request(url, { cache: "reload" }))))
     );
 });
 
