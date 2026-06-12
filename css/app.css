@@ -328,6 +328,15 @@ body {
 #game-score { font-size: 24px; font-weight: 800; }
 #game-best { font-size: 12px; color: var(--gold); font-weight: 700; }
 
+.game-title-label {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--muted);
+    min-width: 48px;
+    text-align: right;
+    white-space: nowrap;
+}
+
 .game-stage {
     position: relative;
     flex: 1;
