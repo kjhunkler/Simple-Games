@@ -3,3 +3,6 @@
 ################################################################################
 
 /.vs
+
+# Bug Hunt multiplayer server (run locally, not part of the static app)
+/server/

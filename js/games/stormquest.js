@@ -7,11 +7,16 @@
         const ctx = canvas.getContext("2d");
 
         let W, H, groundY;
-        let hero, platforms, monsters, pickups, bolts, particles, clouds;
+        let hero, platforms, monsters, pickups, bolts, particles, clouds, fireballs;
         let score, distance, lives, invuln, alive, started;
         let charge, charging, holdStart, holdMoved;
         let shieldTime, speedBoost;
         let speed, spawnX, rafId, lastTs;
+        let aimAngle, pointerDown, swipeRoll;
+        let rollTime, rollCd;
+        let boss, bossLevel, nextBossAt;
+        let bannerText, bannerTime;
+        let aimKey, gestureStartX, gestureStartY;
 
         const kids = !!host.kids;
         const MAX_LIVES = kids ? 5 : 3;
@@ -19,6 +24,11 @@
         const SPEED_SCALE = kids ? 0.66 : 1;
         const CHARGE_FULL = kids ? 0.6 : 0.9;   // seconds of holding for max bolt
         const TAP_MAX = 0.18;      // press shorter than this = jump
+        const AIM_LIMIT = 1.45;    // clamp aim within ~±83° (always forward)
+        const ROLL_DUR = 0.45;     // seconds of the dodge roll (i-frames)
+        const ROLL_CD = kids ? 0.6 : 0.85;      // roll cooldown after the i-frames
+        const FIRST_BOSS = kids ? 2600 : 3400;  // distance before the first boss
+        const BOSS_GAP = kids ? 4200 : 3800;    // distance between bosses
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -41,6 +51,7 @@
             bolts = [];
             particles = [];
             clouds = [];
+            fireballs = [];
             for (let i = 0; i < 5; i++) {
                 clouds.push({ x: Math.random() * W, y: 30 + Math.random() * H * 0.25, s: 0.6 + Math.random() * 0.8 });
             }
@@ -56,6 +67,19 @@
             holdMoved = false;
             shieldTime = 0;
             speedBoost = 0;
+            aimAngle = -0.12;
+            pointerDown = false;
+            swipeRoll = false;
+            rollTime = 0;
+            rollCd = 0;
+            aimKey = 0;
+            gestureStartX = 0;
+            gestureStartY = 0;
+            boss = null;
+            bossLevel = 0;
+            nextBossAt = FIRST_BOSS;
+            bannerText = "";
+            bannerTime = 0;
             speed = 230;
             spawnX = W + 60;
             lastTs = 0;
@@ -133,13 +157,17 @@
             const power = Math.min(charge / CHARGE_FULL, 1);
             if (power < 0.25) { charge = 0; return; }
             const mega = power >= 1;
+            const boltSpeed = 600 + power * 260;
             bolts.push({
                 x: hero.x + hero.w / 2,
                 y: hero.y - hero.h / 2,
-                vx: 560 + power * 240,
+                vx: Math.cos(aimAngle) * boltSpeed,
+                vy: Math.sin(aimAngle) * boltSpeed,
+                angle: aimAngle,
                 power: power,
                 mega: mega,
-                life: mega ? 1.1 : 0.7,
+                hitBoss: false,
+                life: mega ? 1.0 : 0.75,
                 seed: Math.random() * 100
             });
             charge = 0;
@@ -155,8 +183,174 @@
             }
         }
 
+        /* ---------- aiming, rolling & the boss ---------- */
+
+        function clampAim(a) {
+            return Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, a));
+        }
+
+        function aimFromClient(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect();
+            const ox = hero.x + hero.w / 2;
+            const oy = hero.y - hero.h / 2;
+            let a = Math.atan2((clientY - rect.top) - oy, (clientX - rect.left) - ox);
+            // Keep the shot facing forward so you can never fire backward.
+            if (Math.cos(a) < 0.12) a = a < 0 ? -AIM_LIMIT : AIM_LIMIT;
+            aimAngle = clampAim(a);
+        }
+
+        function roll() {
+            if (!alive || rollTime > 0 || rollCd > 0) return;
+            started = true;
+            rollTime = ROLL_DUR;
+            rollCd = ROLL_DUR + ROLL_CD;
+            charging = false;
+            charge = 0;
+            host.vibrate([10, 18]);
+            SGSound.play("flip");
+            for (let i = 0; i < 9; i++) {
+                particles.push({
+                    x: hero.x, y: hero.y - 4,
+                    vx: -(Math.random() * 170 + 40), vy: -(Math.random() * 70),
+                    life: 0.5, color: "#cfd6ff", size: Math.random() * 3 + 2
+                });
+            }
+        }
+
+        function bossMaxHp() {
+            const base = kids ? 6 : 9;
+            return base + bossLevel * (kids ? 3 : 5);
+        }
+
+        function startBoss() {
+            const hp = bossMaxHp();
+            boss = {
+                x: W + 130, stationX: Math.min(W - 96, W * 0.74),
+                y: groundY - 175, baseY: groundY - 175,
+                w: 86, h: 74, hp: hp, maxHp: hp,
+                state: "enter", wob: Math.random() * 6,
+                fireTimer: 1.6, hitFlash: 0, dying: 0
+            };
+            monsters = [];
+            pickups = [];
+            fireballs = [];
+            bolts = [];
+            banner("\u26A0 STORM TITAN APPROACHES", 2.2);
+            host.vibrate([60, 40, 80]);
+            SGSound.play("explode");
+        }
+
+        function throwFireball(spread) {
+            const ox = boss.x - boss.w * 0.28;
+            const oy = boss.y + 6;
+            const tx = hero.x + hero.w / 2;
+            const ty = hero.y - hero.h / 2;
+            const sp = 250 + bossLevel * 22;
+            const baseA = Math.atan2(ty - oy, tx - ox);
+            const offs = spread ? [-0.26, 0, 0.26] : [0];
+            for (const off of offs) {
+                const a = baseA + off;
+                fireballs.push({
+                    x: ox, y: oy,
+                    vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                    r: 13, life: 4.5, spin: Math.random() * 6
+                });
+            }
+            host.vibrate(10);
+            SGSound.play("shoot");
+        }
+
+        function updateBoss(dt) {
+            boss.wob += dt * 3;
+            if (boss.hitFlash > 0) boss.hitFlash = Math.max(0, boss.hitFlash - dt);
+
+            if (boss.state === "enter") {
+                boss.x -= 230 * dt;
+                boss.y = boss.baseY + Math.sin(boss.wob) * 8;
+                if (boss.x <= boss.stationX) {
+                    boss.x = boss.stationX;
+                    boss.state = "fight";
+                    boss.fireTimer = 1.1;
+                    banner("FIGHT!", 1.1);
+                    SGSound.play("perfect");
+                }
+            } else if (boss.state === "fight") {
+                boss.y = boss.baseY + Math.sin(boss.wob) * 16;
+                boss.fireTimer -= dt;
+                if (boss.fireTimer <= 0) {
+                    const enrage = boss.hp <= boss.maxHp * 0.4;
+                    throwFireball(enrage);
+                    const interval = (kids ? 1.9 : 1.35) - Math.min(bossLevel * 0.08, 0.5);
+                    boss.fireTimer = Math.max(0.6, interval) * (enrage ? 0.7 : 1);
+                }
+            } else if (boss.state === "dying") {
+                boss.dying += dt;
+                boss.y = boss.baseY + Math.sin(boss.wob * 3) * 6;
+                if (Math.random() < 0.6) {
+                    particles.push({
+                        x: boss.x + (Math.random() - 0.5) * boss.w,
+                        y: boss.y + (Math.random() - 0.5) * boss.h,
+                        vx: (Math.random() - 0.5) * 240, vy: (Math.random() - 0.8) * 240,
+                        life: 0.8, color: Math.random() < 0.5 ? "#ffd166" : "#ff7b3d",
+                        size: Math.random() * 4 + 2
+                    });
+                }
+                if (boss.dying >= 1.3) defeatBoss();
+            }
+        }
+
+        function hitBoss(dmg, fx, fy) {
+            if (!boss || boss.state === "dying") return;
+            boss.hp -= dmg;
+            boss.hitFlash = 0.16;
+            host.vibrate(12);
+            SGSound.play("eat");
+            for (let k = 0; k < 8; k++) {
+                particles.push({
+                    x: fx, y: fy,
+                    vx: (Math.random() - 0.5) * 240, vy: (Math.random() - 0.8) * 240,
+                    life: 0.6, color: "#9ad8ff", size: Math.random() * 3 + 2
+                });
+            }
+            if (boss.hp <= 0) {
+                boss.hp = 0;
+                boss.state = "dying";
+                boss.dying = 0;
+                fireballs = [];
+                SGSound.play("explode");
+            }
+        }
+
+        function defeatBoss() {
+            const bonus = 25 + bossLevel * 15;
+            score += bonus;
+            host.setScore(score);
+            if (lives < MAX_LIVES) lives += 1;
+            banner("TITAN DEFEATED!  +" + bonus, 2);
+            for (let i = 0; i < 40; i++) {
+                particles.push({
+                    x: boss.x, y: boss.y,
+                    vx: (Math.random() - 0.5) * 420, vy: (Math.random() - 0.6) * 420,
+                    life: 1, color: ["#ffd166", "#ff7b3d", "#9ad8ff"][i % 3],
+                    size: Math.random() * 4 + 2
+                });
+            }
+            host.vibrate([80, 40, 120]);
+            SGSound.play("highscore");
+            boss = null;
+            fireballs = [];
+            bossLevel += 1;
+            nextBossAt = distance + BOSS_GAP;
+            spawnX = W + 80;
+        }
+
+        function banner(text, time) {
+            bannerText = text;
+            bannerTime = time;
+        }
+
         function hurtHero() {
-            if (invuln > 0) return;
+            if (invuln > 0 || rollTime > 0) return;
             if (shieldTime > 0) {
                 shieldTime = 0;
                 invuln = 1;
@@ -234,17 +428,28 @@
                 if (p.life <= 0) particles.splice(i, 1);
             }
 
+            if (bannerTime > 0) bannerTime = Math.max(0, bannerTime - dt);
+
             if (!alive || !started) return;
 
             if (invuln > 0) invuln = Math.max(0, invuln - dt);
             if (shieldTime > 0) shieldTime = Math.max(0, shieldTime - dt);
             if (speedBoost > 0) speedBoost = Math.max(0, speedBoost - dt);
+            if (rollTime > 0) rollTime = Math.max(0, rollTime - dt);
+            if (rollCd > 0) rollCd = Math.max(0, rollCd - dt);
+
+            if (boss) updateBoss(dt);
+            else if (distance >= nextBossAt) startBoss();
 
             if (charging) charge = Math.min(charge + dt, CHARGE_FULL * 1.4);
+            if (aimKey !== 0) aimAngle = clampAim(aimAngle + aimKey * 1.8 * dt);
 
+            const worldMoving = !boss || boss.state === "enter";
             const slowWhileCharging = charging && charge > TAP_MAX ? 0.55 : 1;
             const boost = speedBoost > 0 ? 1.45 : 1;
-            const moveSpeed = (speed + Math.min(distance / 60, 200)) * slowWhileCharging * boost;
+            const moveSpeed = worldMoving
+                ? (speed + Math.min(distance / 60, 200)) * slowWhileCharging * boost
+                : 0;
             distance += moveSpeed * dt;
 
             // Hero physics
@@ -285,18 +490,32 @@
             }
             for (const p of pickups) { p.x -= moveSpeed * dt; p.wob += dt * 4; }
             spawnX -= moveSpeed * dt;
-            while (spawnX < W + 200) spawnChunk();
+            if (worldMoving && !boss) {
+                while (spawnX < W + 200) spawnChunk();
+            }
 
             platforms = platforms.filter(pf => pf.x + pf.w > -40);
             monsters = monsters.filter(m => m.x + m.w > -60 && m.hp > 0);
             pickups = pickups.filter(p => p.x > -40 && !p.got);
 
-            // Bolts fly right and strike monsters
+            // Bolts fly along their aim and strike monsters or the boss
             for (let i = bolts.length - 1; i >= 0; i--) {
                 const b = bolts[i];
                 b.x += b.vx * dt;
+                b.y += b.vy * dt;
                 b.life -= dt;
-                if (b.life <= 0 || b.x > W + 80) { bolts.splice(i, 1); continue; }
+                if (b.life <= 0 || b.x > W + 80 || b.x < -80 || b.y < -80 || b.y > H + 80) {
+                    bolts.splice(i, 1);
+                    continue;
+                }
+                if (boss && !b.hitBoss && boss.state !== "dying") {
+                    if (Math.abs(b.x - boss.x) < boss.w / 2 + 16 &&
+                        Math.abs(b.y - boss.y) < boss.h / 2 + 16) {
+                        b.hitBoss = true;
+                        if (!b.mega) b.life = 0;
+                        hitBoss(b.mega ? 4 : 1, b.x, b.y);
+                    }
+                }
                 for (const m of monsters) {
                     if (m.hp <= 0) continue;
                     const my = m.y - m.h / 2;
@@ -318,6 +537,27 @@
                             }
                         }
                     }
+                }
+            }
+
+            // Boss fireballs drift toward the hero
+            for (let i = fireballs.length - 1; i >= 0; i--) {
+                const f = fireballs[i];
+                f.x += f.vx * dt;
+                f.y += f.vy * dt;
+                f.spin += dt * 8;
+                f.life -= dt;
+                if (f.life <= 0 || f.x < -40 || f.y < -40 || f.y > H + 40) {
+                    fireballs.splice(i, 1);
+                    continue;
+                }
+                const hx = hero.x;
+                const hy = hero.y - hero.h / 2;
+                if (Math.abs(f.x - hx) < f.r + hero.w * 0.3 &&
+                    Math.abs(f.y - hy) < f.r + hero.h * 0.4) {
+                    fireballs.splice(i, 1);
+                    hurtHero();
+                    if (!alive) return;
                 }
             }
 
@@ -400,8 +640,25 @@
             const blink = invuln > 0 && Math.floor(invuln * 8) % 2 === 0;
             if (blink) return;
 
+            const rolling = rollTime > 0;
+            const rollT = rolling ? 1 - rollTime / ROLL_DUR : 0;
+
             ctx.save();
             ctx.translate(hero.x, hy);
+
+            // Dodge-roll: duck low, spin, and leave a motion ghost
+            if (rolling) {
+                ctx.globalAlpha = 0.3;
+                ctx.fillStyle = "#9ad8ff";
+                ctx.beginPath();
+                ctx.ellipse(hero.w / 2 - 6, hero.h * 0.55, hero.w * 0.62, hero.h * 0.4, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                ctx.translate(hero.w / 2 - 6, hero.h * 0.5);
+                ctx.rotate(rollT * Math.PI * 2);
+                ctx.scale(0.82, 0.82);
+                ctx.translate(-(hero.w / 2 - 6), -(hero.h * 0.5));
+            }
 
             // Shield bubble
             if (shieldTime > 0) {
@@ -592,6 +849,121 @@
             ctx.restore();
         }
 
+        function drawAimGuide() {
+            const ox = hero.x + hero.w / 2;
+            const oy = hero.y - hero.h / 2;
+            const p = Math.min(charge / CHARGE_FULL, 1);
+            const len = 70 + p * 70;
+            ctx.save();
+            ctx.globalAlpha = 0.55;
+            ctx.strokeStyle = p >= 1 ? "#ffffff" : "#ffd166";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 7]);
+            ctx.beginPath();
+            ctx.moveTo(ox, oy);
+            ctx.lineTo(ox + Math.cos(aimAngle) * len, oy + Math.sin(aimAngle) * len);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // Arrow head
+            const tx = ox + Math.cos(aimAngle) * len;
+            const ty = oy + Math.sin(aimAngle) * len;
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = p >= 1 ? "#ffffff" : "#ffd166";
+            ctx.beginPath();
+            ctx.moveTo(tx + Math.cos(aimAngle) * 10, ty + Math.sin(aimAngle) * 10);
+            ctx.lineTo(tx + Math.cos(aimAngle + 2.4) * 9, ty + Math.sin(aimAngle + 2.4) * 9);
+            ctx.lineTo(tx + Math.cos(aimAngle - 2.4) * 9, ty + Math.sin(aimAngle - 2.4) * 9);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawFireball(f) {
+            ctx.save();
+            ctx.translate(f.x, f.y);
+            const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, f.r + 6);
+            glow.addColorStop(0, "#fff1c2");
+            glow.addColorStop(0.5, "#ff7b3d");
+            glow.addColorStop(1, "rgba(255, 77, 77, 0)");
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(0, 0, f.r + 6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#ff4d4d";
+            ctx.beginPath();
+            ctx.arc(0, 0, f.r * 0.62, 0, Math.PI * 2);
+            ctx.fill();
+            // Trailing flames
+            ctx.globalAlpha = 0.5;
+            ctx.fillStyle = "#ffd166";
+            for (let i = 1; i <= 3; i++) {
+                ctx.beginPath();
+                ctx.arc(f.vx > 0 ? -i * 6 : i * 6, Math.sin(f.spin + i) * 3, f.r * 0.4 - i, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        function drawBoss() {
+            const b = boss;
+            ctx.save();
+            ctx.translate(b.x, b.y);
+            // Shadow on the ground
+            ctx.globalAlpha = 0.25;
+            ctx.fillStyle = "#000";
+            ctx.beginPath();
+            ctx.ellipse(0, groundY - b.y, b.w * 0.5, 12, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+
+            const body = b.hitFlash > 0 ? "#ffffff" : "#5b4aa0";
+            // Storm cloud body
+            ctx.fillStyle = body;
+            ctx.beginPath();
+            ctx.arc(-b.w * 0.28, 0, b.h * 0.42, 0, Math.PI * 2);
+            ctx.arc(b.w * 0.28, 0, b.h * 0.42, 0, Math.PI * 2);
+            ctx.arc(0, -b.h * 0.18, b.h * 0.5, 0, Math.PI * 2);
+            ctx.arc(0, b.h * 0.1, b.h * 0.46, 0, Math.PI * 2);
+            ctx.fill();
+            // Darker underside
+            ctx.fillStyle = b.hitFlash > 0 ? "#ffffff" : "#3c2f73";
+            ctx.beginPath();
+            ctx.ellipse(0, b.h * 0.22, b.w * 0.5, b.h * 0.2, 0, 0, Math.PI);
+            ctx.fill();
+            // Glowing eyes
+            const enrage = b.hp <= b.maxHp * 0.4;
+            ctx.fillStyle = enrage ? "#ff4d4d" : "#ffd166";
+            ctx.beginPath();
+            ctx.arc(-b.w * 0.16, -b.h * 0.1, 7, 0, Math.PI * 2);
+            ctx.arc(b.w * 0.16, -b.h * 0.1, 7, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#1b2438";
+            ctx.beginPath();
+            ctx.arc(-b.w * 0.16, -b.h * 0.1, 3, 0, Math.PI * 2);
+            ctx.arc(b.w * 0.16, -b.h * 0.1, 3, 0, Math.PI * 2);
+            ctx.fill();
+            // Angry brow
+            ctx.strokeStyle = "#1b2438";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(-b.w * 0.28, -b.h * 0.24);
+            ctx.lineTo(-b.w * 0.05, -b.h * 0.14);
+            ctx.moveTo(b.w * 0.28, -b.h * 0.24);
+            ctx.lineTo(b.w * 0.05, -b.h * 0.14);
+            ctx.stroke();
+            // Crackling lightning beard
+            ctx.strokeStyle = "#9ad8ff";
+            ctx.lineWidth = 2;
+            for (let i = -1; i <= 1; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * b.w * 0.22, b.h * 0.28);
+                ctx.lineTo(i * b.w * 0.22 + 5, b.h * 0.4);
+                ctx.lineTo(i * b.w * 0.22 - 3, b.h * 0.5);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
         function draw() {
             // Stormy dusk sky
             const grad = ctx.createLinearGradient(0, 0, 0, H);
@@ -655,18 +1027,31 @@
 
             for (const p of pickups) drawPickup(p);
             for (const m of monsters) drawMonster(m);
+            if (boss) drawBoss();
 
-            // Bolts
+            // Boss fireballs
+            for (const f of fireballs) drawFireball(f);
+
+            // Bolts travel along their aimed angle
             for (const b of bolts) {
+                ctx.save();
+                ctx.translate(b.x, b.y);
+                ctx.rotate(b.angle);
                 ctx.strokeStyle = b.mega ? "#ffffff" : "#ffd166";
                 ctx.lineWidth = b.mega ? 5 : 3;
                 ctx.lineCap = "round";
-                drawLightningPath(b.x - 60, b.y, b.x, b.seed + Date.now() / 40, b.mega ? 16 : 8);
+                drawLightningPath(-60, 0, 0, b.seed + Date.now() / 40, b.mega ? 16 : 8);
                 if (b.mega) {
                     ctx.strokeStyle = "rgba(154, 216, 255, 0.7)";
                     ctx.lineWidth = 9;
-                    drawLightningPath(b.x - 60, b.y, b.x, b.seed + Date.now() / 31 + 5, 22);
+                    drawLightningPath(-60, 0, 0, b.seed + Date.now() / 31 + 5, 22);
                 }
+                ctx.restore();
+            }
+
+            // Aim guide while charging a bolt
+            if (charging && charge > TAP_MAX && alive) {
+                drawAimGuide();
             }
 
             // Particles
@@ -721,6 +1106,46 @@
                 }
             }
 
+            // Roll cooldown pip
+            if (rollCd > 0 && rollTime <= 0) {
+                const cp = 1 - rollCd / (ROLL_DUR + ROLL_CD);
+                ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+                roundRect(W - 96, H - 30, 72, 12, 6);
+                ctx.fillStyle = "#9ad8ff";
+                roundRect(W - 94, H - 28, 68 * cp, 8, 4);
+            } else if (rollTime <= 0) {
+                ctx.fillStyle = "#9ad8ff";
+                ctx.font = "700 12px system-ui, sans-serif";
+                ctx.textAlign = "right";
+                ctx.fillText("\u2193 ROLL READY", W - 24, H - 20);
+            }
+
+            // Boss health bar
+            if (boss && boss.state !== "enter") {
+                const bw = Math.min(W - 48, 320);
+                const bx = (W - bw) / 2;
+                const by = 48;
+                ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+                roundRect(bx - 4, by - 4, bw + 8, 22, 8);
+                const hpPct = Math.max(0, boss.hp / boss.maxHp);
+                ctx.fillStyle = hpPct > 0.4 ? "#ff7b3d" : "#ff4d4d";
+                roundRect(bx, by, bw * hpPct, 14, 6);
+                ctx.fillStyle = "#f2f3ff";
+                ctx.font = "800 12px system-ui, sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText("STORM TITAN", W / 2, by + 11);
+            }
+
+            // Center banner (boss intro / victory)
+            if (bannerTime > 0) {
+                ctx.globalAlpha = Math.min(1, bannerTime * 1.5);
+                ctx.fillStyle = "#ffd166";
+                ctx.font = "800 24px system-ui, sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText(bannerText, W / 2, H * 0.26);
+                ctx.globalAlpha = 1;
+            }
+
             if (!started && alive) {
                 ctx.fillStyle = "rgba(242, 243, 255, 0.9)";
                 ctx.font = "700 17px system-ui, sans-serif";
@@ -728,8 +1153,8 @@
                 ctx.fillText("Tap to jump \u2022 double-tap for double jump", W / 2, H * 0.3);
                 ctx.font = "500 14px system-ui, sans-serif";
                 ctx.fillStyle = "rgba(154, 160, 195, 0.95)";
-                ctx.fillText("HOLD to charge lightning, release to ZAP!", W / 2, H * 0.3 + 26);
-                ctx.fillText("Grab hearts, shields & bolts to survive", W / 2, H * 0.3 + 48);
+                ctx.fillText("HOLD to charge \u2022 drag to AIM \u2022 release to ZAP!", W / 2, H * 0.3 + 26);
+                ctx.fillText("Swipe DOWN to roll & dodge \u2022 beat the boss!", W / 2, H * 0.3 + 48);
             }
         }
 
@@ -742,18 +1167,22 @@
             draw();
         }
 
-        /* ---------- input: tap = jump, hold = charge ---------- */
+        /* ---------- input: tap = jump, hold = charge & aim, swipe down = roll ---------- */
+
+        const SWIPE_ROLL = 46; // downward pixels that trigger a dodge roll
 
         function pressStart() {
             if (!alive) return;
             holdStart = performance.now();
             charging = true;
             charge = 0;
+            holdMoved = false;
         }
 
         function pressEnd() {
             if (!alive || !charging) return;
             charging = false;
+            if (swipeRoll) { swipeRoll = false; return; }
             const held = (performance.now() - holdStart) / 1000;
             if (held < TAP_MAX) {
                 charge = 0;
@@ -766,20 +1195,63 @@
 
         function onTouchStart(e) {
             e.preventDefault();
+            const t = e.changedTouches[0];
+            gestureStartX = t.clientX;
+            gestureStartY = t.clientY;
+            swipeRoll = false;
             pressStart();
+        }
+        function onTouchMove(e) {
+            e.preventDefault();
+            if (!charging) return;
+            const t = e.changedTouches[0];
+            const dx = t.clientX - gestureStartX;
+            const dy = t.clientY - gestureStartY;
+            // A clear downward flick becomes a dodge roll instead of a bolt.
+            if (!swipeRoll && dy > SWIPE_ROLL && dy > Math.abs(dx)) {
+                swipeRoll = true;
+                charging = false;
+                charge = 0;
+                roll();
+                return;
+            }
+            aimFromClient(t.clientX, t.clientY);
         }
         function onTouchEnd(e) {
             e.preventDefault();
             pressEnd();
         }
-        function onMouseDown() { pressStart(); }
+        function onMouseDown(e) {
+            gestureStartX = e.clientX;
+            gestureStartY = e.clientY;
+            swipeRoll = false;
+            pressStart();
+        }
+        function onMouseMove(e) {
+            if (!charging) return;
+            const dx = e.clientX - gestureStartX;
+            const dy = e.clientY - gestureStartY;
+            if (!swipeRoll && dy > SWIPE_ROLL && dy > Math.abs(dx)) {
+                swipeRoll = true;
+                charging = false;
+                charge = 0;
+                roll();
+                return;
+            }
+            aimFromClient(e.clientX, e.clientY);
+        }
         function onMouseUp() { pressEnd(); }
         function onKeyDown(e) {
             if (e.repeat) return;
             if (e.code === "Space" || e.key === "ArrowUp") { e.preventDefault(); pressStart(); }
+            else if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") { e.preventDefault(); roll(); }
+            else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") { aimKey = -1; }
+            else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") { aimKey = 1; }
         }
         function onKeyUp(e) {
             if (e.code === "Space" || e.key === "ArrowUp") { e.preventDefault(); pressEnd(); }
+            else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") { if (aimKey < 0) aimKey = 0; }
+            else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") { if (aimKey > 0) aimKey = 0; }
         }
 
         return {
@@ -788,8 +1260,10 @@
                 reset();
                 window.addEventListener("resize", resize);
                 canvas.addEventListener("touchstart", onTouchStart, { passive: false });
+                canvas.addEventListener("touchmove", onTouchMove, { passive: false });
                 canvas.addEventListener("touchend", onTouchEnd, { passive: false });
                 canvas.addEventListener("mousedown", onMouseDown);
+                window.addEventListener("mousemove", onMouseMove);
                 window.addEventListener("mouseup", onMouseUp);
                 window.addEventListener("keydown", onKeyDown);
                 window.addEventListener("keyup", onKeyUp);
@@ -803,8 +1277,10 @@
                 cancelAnimationFrame(rafId);
                 window.removeEventListener("resize", resize);
                 canvas.removeEventListener("touchstart", onTouchStart);
+                canvas.removeEventListener("touchmove", onTouchMove);
                 canvas.removeEventListener("touchend", onTouchEnd);
                 canvas.removeEventListener("mousedown", onMouseDown);
+                window.removeEventListener("mousemove", onMouseMove);
                 window.removeEventListener("mouseup", onMouseUp);
                 window.removeEventListener("keydown", onKeyDown);
                 window.removeEventListener("keyup", onKeyUp);
@@ -817,7 +1293,7 @@
         id: "stormquest",
         name: "Storm Quest",
         emoji: "\u26A1",
-        tag: "Run, jump & charge mega lightning bolts.",
+        tag: "Aim lightning, roll to dodge & slay the Storm Titan.",
         scoreLabel: "points",
         create: create
     };
