@@ -24,7 +24,8 @@
         const SPEED_SCALE = kids ? 0.66 : 1;
         const CHARGE_FULL = kids ? 0.6 : 0.9;   // seconds of holding for max bolt
         const TAP_MAX = 0.18;      // press shorter than this = jump
-        const AIM_LIMIT = 1.45;    // clamp aim within ~±83° (always forward)
+        const AIM_MIN = -Math.PI / 2; // highest aim: straight up
+        const AIM_MAX = 0;            // lowest aim: straight ahead (never downward)
         const ROLL_DUR = 0.45;     // seconds of the dodge roll (i-frames)
         const ROLL_CD = kids ? 0.6 : 0.85;      // roll cooldown after the i-frames
         const FIRST_BOSS = kids ? 2600 : 3400;  // distance before the first boss
@@ -186,21 +187,21 @@
         /* ---------- aiming, rolling & the boss ---------- */
 
         function clampAim(a) {
-            return Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, a));
+            return Math.max(AIM_MIN, Math.min(AIM_MAX, a));
         }
 
         function aimFromClient(clientX, clientY) {
             const rect = canvas.getBoundingClientRect();
             const ox = hero.x + hero.w / 2;
             const oy = hero.y - hero.h / 2;
-            let a = Math.atan2((clientY - rect.top) - oy, (clientX - rect.left) - ox);
-            // Keep the shot facing forward so you can never fire backward.
-            if (Math.cos(a) < 0.12) a = a < 0 ? -AIM_LIMIT : AIM_LIMIT;
+            const a = Math.atan2((clientY - rect.top) - oy, (clientX - rect.left) - ox);
+            // Constrain between straight up and straight ahead — never down or backward.
             aimAngle = clampAim(a);
         }
 
         function roll() {
             if (!alive || rollTime > 0 || rollCd > 0) return;
+            if (charging && charge > TAP_MAX) return; // no rolling while a bolt is charging
             started = true;
             rollTime = ROLL_DUR;
             rollCd = ROLL_DUR + ROLL_CD;
@@ -1207,8 +1208,8 @@
             const t = e.changedTouches[0];
             const dx = t.clientX - gestureStartX;
             const dy = t.clientY - gestureStartY;
-            // A clear downward flick becomes a dodge roll instead of a bolt.
-            if (!swipeRoll && dy > SWIPE_ROLL && dy > Math.abs(dx)) {
+            // A clear downward flick rolls — but only before a bolt starts charging.
+            if (!swipeRoll && charge <= TAP_MAX && dy > SWIPE_ROLL && dy > Math.abs(dx)) {
                 swipeRoll = true;
                 charging = false;
                 charge = 0;
@@ -1231,7 +1232,7 @@
             if (!charging) return;
             const dx = e.clientX - gestureStartX;
             const dy = e.clientY - gestureStartY;
-            if (!swipeRoll && dy > SWIPE_ROLL && dy > Math.abs(dx)) {
+            if (!swipeRoll && charge <= TAP_MAX && dy > SWIPE_ROLL && dy > Math.abs(dx)) {
                 swipeRoll = true;
                 charging = false;
                 charge = 0;

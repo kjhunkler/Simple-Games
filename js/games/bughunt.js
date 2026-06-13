@@ -7,6 +7,11 @@
     const PLAYER_SPEED = 200;          // world px / second
     const MOVE_SEND_MS = 60;           // how often we push our position
     const STYLE_ID = "bughunt-style";
+    const VIEW_W = 640, VIEW_H = 640;  // world units kept visible (camera zoom)
+
+    // Hard-coded server location. The server's port is 8765 (see server.py).
+    const SERVER_HOST = "192.168.0.12";
+    const SERVER_PORT = 8765;
 
     const CSS = `
     .bh-hud{position:absolute;inset:0;pointer-events:none;font-family:system-ui,sans-serif;
@@ -61,12 +66,8 @@
     `;
 
     function defaultWsUrl() {
-        const loc = window.location;
-        if (loc.protocol === "http:" || loc.protocol === "https:") {
-            const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-            return proto + "//" + loc.host + "/ws";
-        }
-        return "ws://localhost:8765/ws";
+        // Always connect to the hard-coded server, wherever the page is opened from.
+        return "ws://" + SERVER_HOST + ":" + SERVER_PORT + "/ws";
     }
 
     function create(host) {
@@ -78,7 +79,7 @@
         const myName = profile ? profile.name : "Player";
         const myAvatar = profile ? profile.avatar : "\u{1F642}";
 
-        let W = 0, H = 0, scale = 1, offX = 0, offY = 0, dpr = 1;
+        let W = 0, H = 0, scale = 1, camX = 500, camY = 350, dpr = 1;
         let world = { w: 1000, h: 700 };
         let ws = null, myId = null, connected = false;
         let state = null;                  // latest shared state from server
@@ -354,7 +355,7 @@
             const rect = canvas.getBoundingClientRect();
             const cx = clientX - rect.left;
             const cy = clientY - rect.top;
-            return { x: (cx - offX) / scale, y: (cy - offY) / scale };
+            return { x: (cx - W / 2) / scale + camX, y: (cy - H / 2) / scale + camY };
         }
 
         function onFieldTap(e) {
@@ -378,9 +379,16 @@
             canvas.width = W * dpr;
             canvas.height = H * dpr;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            scale = Math.min(W / world.w, H / world.h);
-            offX = (W - world.w * scale) / 2;
-            offY = (H - world.h * scale) / 2;
+            // Zoom so a comfortable window of the world fills the screen (no bars).
+            scale = Math.max(W / VIEW_W, H / VIEW_H);
+        }
+
+        function updateCamera() {
+            const halfW = (W / scale) / 2, halfH = (H / scale) / 2;
+            const cx = havePos ? me.x : world.w / 2;
+            const cy = havePos ? me.y : world.h / 2;
+            camX = world.w <= halfW * 2 ? world.w / 2 : Math.max(halfW, Math.min(world.w - halfW, cx));
+            camY = world.h <= halfH * 2 ? world.h / 2 : Math.max(halfH, Math.min(world.h - halfH, cy));
         }
 
         function step(dt) {
@@ -402,8 +410,8 @@
             }
         }
 
-        function wx(x) { return offX + x * scale; }
-        function wy(y) { return offY + y * scale; }
+        function wx(x) { return (x - camX) * scale + W / 2; }
+        function wy(y) { return (y - camY) * scale + H / 2; }
 
         function drawSpot(s, t) {
             const x = wx(s.x), y = wy(s.y);
@@ -461,19 +469,32 @@
         }
 
         function draw(t) {
-            // Field background.
-            ctx.fillStyle = "#1b3a23";
+            updateCamera();
+
+            // Everything outside the field.
+            ctx.fillStyle = "#0e1f14";
             ctx.fillRect(0, 0, W, H);
-            const g = ctx.createLinearGradient(0, offY, 0, offY + world.h * scale);
+
+            // The grassy field (only the camera's window of it shows).
+            const gx = wx(0), gy = wy(0), gw = world.w * scale, gh = world.h * scale;
+            const g = ctx.createLinearGradient(0, gy, 0, gy + gh);
             g.addColorStop(0, "#23502f");
             g.addColorStop(1, "#173a22");
             ctx.fillStyle = g;
-            ctx.fillRect(offX, offY, world.w * scale, world.h * scale);
+            ctx.fillRect(gx, gy, gw, gh);
 
-            // Subtle field border.
-            ctx.strokeStyle = "#ffffff14";
-            ctx.lineWidth = 2;
-            ctx.strokeRect(offX, offY, world.w * scale, world.h * scale);
+            // Faint grid so movement is readable as the camera pans.
+            ctx.strokeStyle = "#ffffff0f";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let x = 0; x <= world.w; x += 100) { ctx.moveTo(wx(x), gy); ctx.lineTo(wx(x), gy + gh); }
+            for (let y = 0; y <= world.h; y += 100) { ctx.moveTo(gx, wy(y)); ctx.lineTo(gx + gw, wy(y)); }
+            ctx.stroke();
+
+            // Field border.
+            ctx.strokeStyle = "#ffffff24";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(gx, gy, gw, gh);
 
             if (!state) return;
             for (const s of state.spots || []) drawSpot(s, t);
