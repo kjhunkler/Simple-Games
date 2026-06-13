@@ -58,8 +58,11 @@
     .bh-errbody p{margin:6px 0;}
     .bh-list{text-align:left;margin:6px 0 12px;padding-left:18px;font-size:13px;opacity:.9;line-height:1.45;}
     .bh-list li{margin:4px 0;}
-    .bh-addr{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0c0c16;border:1px solid #ffffff26;
-        border-radius:8px;padding:8px 10px;word-break:break-all;font-size:13px;opacity:1;}
+    .bh-addr{display:block;font-family:ui-monospace,Menlo,Consolas,monospace;background:#0c0c16;
+        border:1px solid #ffffff26;border-radius:8px;padding:10px;word-break:break-all;font-size:14px;opacity:1;}
+    a.bh-addr,a.bh-link{color:#9fc1ff;text-decoration:underline;cursor:pointer;}
+    a.bh-addr{font-weight:700;border-color:#6c7bff66;}
+    a.bh-addr:active,a.bh-link:active{color:#fff;}
     .bh-errbody code{background:#ffffff1f;padding:1px 5px;border-radius:5px;font-size:12px;}
     .bh-card input{width:100%;box-sizing:border-box;padding:11px;border-radius:11px;border:1px solid #ffffff33;
         background:#0c0c16;color:#fff;font-size:14px;margin-bottom:12px;}
@@ -77,6 +80,14 @@
         // Host/port are hard-coded so it works wherever the page is opened from.
         const scheme = window.location.protocol === "https:" ? "wss" : "ws";
         return scheme + "://" + SERVER_HOST + ":" + SERVER_PORT + "/ws";
+    }
+
+    // Tappable links for the error/help cards.
+    function addrLink(url) {
+        return '<a class="bh-addr bh-link" href="' + url + '" target="_blank" rel="noopener">' + url + "</a>";
+    }
+    function inlineLink(url) {
+        return '<a class="bh-link" href="' + url + '" target="_blank" rel="noopener">' + url + "</a>";
     }
 
     function create(host) {
@@ -156,7 +167,15 @@
             });
         }
 
+        // Hide the on-screen controls while a card (join/error) is showing, so
+        // they can't sit on top of buttons or links the player needs to tap.
+        function setControls(visible) {
+            const dp = hud && hud.querySelector(".bh-dpad");
+            if (dp) dp.classList.toggle("bh-hidden", !visible);
+        }
+
         function showJoin() {
+            setControls(false);
             elCenter.innerHTML =
                 '<div class="bh-card">' +
                 '  <div class="bh-who">' + myAvatar + "</div>" +
@@ -178,6 +197,7 @@
         function clearCenter() { elCenter.innerHTML = ""; }
 
         function showError(title, htmlBody) {
+            setControls(false);
             elStatus.textContent = "offline";
             elCenter.innerHTML =
                 '<div class="bh-card">' +
@@ -202,8 +222,8 @@
                     "<p>This page is <b>https</b>, so it can't use an insecure " +
                     "<code>ws://</code> connection.</p>" +
                     "<p>Either use a <code>wss://</code> address, or simply open the game " +
-                    "over http:</p>" +
-                    "<p class=\"bh-addr\">http://" + SERVER_HOST + ":" + SERVER_PORT + "</p>");
+                    "over http (tap to open):</p>" +
+                    addrLink("http://" + SERVER_HOST + ":" + SERVER_PORT));
                 return;
             }
 
@@ -275,13 +295,14 @@
                 "<p>To allow it on this device:</p>" +
                 "<ol class=\"bh-list\">" +
                 "<li>start the server with <code>python server.py --https</code></li>" +
-                "<li>open <code>" + https + "</code> in <b>this</b> browser</li>" +
+                "<li>open " + inlineLink(https) + " in <b>this</b> browser</li>" +
                 "<li>tap <b>Advanced</b> → <b>Proceed / Visit anyway</b> to trust the " +
                 "certificate (it's your own server)</li>" +
                 "<li>come back here and tap <b>Try again</b></li>" +
                 "</ol>" +
-                "<p><b>Easier:</b> skip certificates and open the game over http:</p>" +
-                "<p class=\"bh-addr\">" + http + "</p>";
+                "<p><b>Easier:</b> skip certificates and open the game over http " +
+                "(tap to open):</p>" +
+                addrLink(http);
         }
 
         function send(obj) {
@@ -295,6 +316,7 @@
                 myId = msg.id;
                 world = msg.world || world;
                 clearCenter();
+                setControls(true);
             } else if (msg.type === "state") {
                 applyState(msg);
             }
