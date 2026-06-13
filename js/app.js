@@ -205,7 +205,17 @@
             card.querySelector(".game-name").textContent = def.name;
             card.querySelector(".game-tag").textContent = def.tag;
             card.querySelector(".game-best").textContent = best > 0 ? "\u2B50 Best: " + best : "Not played yet";
-            card.addEventListener("click", () => startGame(id));
+            card.addEventListener("click", () => {
+                // Some games (e.g. Bug Hunt) run as their own page on the game
+                // server. Open that directly, carrying the chosen profile, instead
+                // of hosting them inside the app shell.
+                if (typeof def.launchUrl === "function") {
+                    SGSound.play("tap");
+                    window.location.href = def.launchUrl(profile);
+                    return;
+                }
+                startGame(id);
+            });
             grid.appendChild(card);
         }
     }

@@ -95,9 +95,14 @@
         const ctx = canvas.getContext("2d");
         const stage = canvas.parentElement;
 
+        // Profile comes from the URL (when launched as a standalone page from the
+        // menu) or, failing that, from the app's active profile.
+        const params = new URLSearchParams(window.location.search);
+        const urlName = params.get("name");
+        const urlAvatar = params.get("avatar");
         const profile = (window.SGStorage && SGStorage.getActiveProfile()) || null;
-        const myName = profile ? profile.name : "Player";
-        const myAvatar = profile ? profile.avatar : "\u{1F642}";
+        const myName = urlName || (profile ? profile.name : "Player");
+        const myAvatar = urlAvatar || (profile ? profile.avatar : "\u{1F642}");
 
         let W = 0, H = 0, scale = 1, camX = 500, camY = 350, dpr = 1;
         let world = { w: 1000, h: 700 };
@@ -522,24 +527,59 @@
             ctx.translate(x + wob, y);
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            const fs = Math.max(26, 34 * scale);
-            ctx.font = fs + "px system-ui, sans-serif";
-            let glyph = "\u{1FAB5}";                 // log
-            if (s.type === "tree") glyph = "\u{1F333}";
-            else if (s.type === "grass") glyph = "\u{1F33F}";
-            ctx.globalAlpha = 0.95;
-            ctx.fillText(glyph, 0, 0);
+            const fs = Math.max(28, 36 * scale);
+
+            if (s.type === "log") {
+                // Drawn (not emoji) so it always shows — the wood emoji is new and
+                // renders as a blank box on older phones.
+                const w = fs * 1.05, h = fs * 0.5;
+                ctx.fillStyle = "#6b4a2b";
+                roundRect(-w / 2, -h / 2, w, h, h / 2);
+                ctx.fill();
+                ctx.fillStyle = "#caa06a";
+                ctx.beginPath();
+                ctx.ellipse(w / 2 - h * 0.18, 0, h * 0.32, h * 0.42, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = "#8a6a44";
+                ctx.beginPath();
+                ctx.ellipse(w / 2 - h * 0.18, 0, h * 0.16, h * 0.22, 0, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                ctx.font = fs + "px system-ui, sans-serif";
+                ctx.fillStyle = "#2f7d3f";       // visible if the emoji falls back
+                ctx.fillText(s.type === "tree" ? "\u{1F333}" : "\u{1F33F}", 0, 0);
+            }
             ctx.restore();
+        }
+
+        function roundRect(x, y, w, h, r) {
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.arcTo(x + w, y, x + w, y + h, r);
+            ctx.arcTo(x + w, y + h, x, y + h, r);
+            ctx.arcTo(x, y + h, x, y, r);
+            ctx.arcTo(x, y, x + w, y, r);
+            ctx.closePath();
         }
 
         function drawBug(b, t) {
             const x = wx(b.x), y = wy(b.y);
             const bob = Math.sin(t * 8 + b.x) * 2;
+            const r = Math.max(18, 22 * scale);
             ctx.save();
             ctx.translate(x, y + bob);
+            // A soft pale halo keeps bugs readable on the dark grass, and means
+            // they're visible even if a device can't render the colour emoji.
+            ctx.beginPath();
+            ctx.arc(0, 0, r, 0, Math.PI * 2);
+            ctx.fillStyle = "rgba(255,255,255,0.82)";
+            ctx.fill();
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            ctx.font = Math.max(20, 26 * scale) + "px system-ui, sans-serif";
+            ctx.font = Math.max(24, 30 * scale) + "px system-ui, sans-serif";
+            // Set an explicit dark fill so any monochrome-fallback glyph reads as
+            // a clear silhouette on the halo (instead of a near-invisible shadow).
+            ctx.fillStyle = "#15311f";
             ctx.fillText(b.emoji, 0, 0);
             if (b.cap && b.cap.p > 0.02) {
                 const bw = 40, bh = 6, by = -24;
@@ -555,18 +595,14 @@
             const x = wx(p.x), y = wy(p.y);
             const mine = p.id === myId;
             ctx.save();
-            ctx.beginPath();
-            ctx.arc(x, y, 20, 0, Math.PI * 2);
-            ctx.fillStyle = mine ? "#6c7bffcc" : "#ffffff33";
-            ctx.fill();
-            if (mine) { ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.stroke(); }
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            ctx.font = "22px system-ui, sans-serif";
+            ctx.font = "30px system-ui, sans-serif";
+            ctx.fillStyle = "#fff";
             ctx.fillText(p.avatar, x, y + 1);
             ctx.font = "700 12px system-ui, sans-serif";
-            ctx.fillStyle = "#fff";
-            ctx.fillText(p.name + (mine ? " (you)" : ""), x, y - 28);
+            ctx.fillStyle = mine ? "#ffd166" : "#fff";
+            ctx.fillText(p.name + (mine ? " (you)" : ""), x, y - 26);
             ctx.restore();
         }
 
@@ -657,6 +693,16 @@
         emoji: "\u{1F41B}",
         tag: "Same-Wi-Fi multiplayer. Catch your bugs in order!",
         scoreLabel: "bugs",
-        create: create
+        create: create,
+        // Bug Hunt needs the live server and a plain http origin (so ws:// works
+        // and the PWA's https/offline shell doesn't get in the way). The menu
+        // opens this URL directly as a fresh page, passing the chosen profile so
+        // the player drops straight into the game.
+        launchUrl: function (profile) {
+            const base = "http://" + SERVER_HOST + ":" + SERVER_PORT + "/bughunt.html";
+            const q = "?name=" + encodeURIComponent(profile ? profile.name : "Player") +
+                "&avatar=" + encodeURIComponent(profile ? profile.avatar : "\u{1F642}");
+            return base + q;
+        }
     };
 })();
