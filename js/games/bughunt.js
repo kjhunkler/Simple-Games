@@ -73,8 +73,10 @@
     `;
 
     function defaultWsUrl() {
-        // Always connect to the hard-coded server, wherever the page is opened from.
-        return "ws://" + SERVER_HOST + ":" + SERVER_PORT + "/ws";
+        // An https page can only use a secure socket (wss); http uses ws.
+        // Host/port are hard-coded so it works wherever the page is opened from.
+        const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+        return scheme + "://" + SERVER_HOST + ":" + SERVER_PORT + "/ws";
     }
 
     function create(host) {
@@ -193,12 +195,14 @@
             clearCenter();
             elStatus.textContent = "connecting…";
 
-            // The #1 mobile failure: an https page can't open an insecure ws://.
+            // An https page can't open an insecure ws:// (mixed content). With the
+            // default URL this never happens (https -> wss), but guard a manual one.
             if (window.location.protocol === "https:" && url.indexOf("ws://") === 0) {
-                showError("Can't connect (https blocks it)",
-                    "<p>This page is loaded over <b>https</b>, and browsers block an " +
-                    "insecure <code>ws://</code> connection from it (“mixed content”).</p>" +
-                    "<p><b>Fix:</b> open the game straight from the server instead:</p>" +
+                showError("Can't connect (https blocks ws://)",
+                    "<p>This page is <b>https</b>, so it can't use an insecure " +
+                    "<code>ws://</code> connection.</p>" +
+                    "<p>Either use a <code>wss://</code> address, or simply open the game " +
+                    "over http:</p>" +
                     "<p class=\"bh-addr\">http://" + SERVER_HOST + ":" + SERVER_PORT + "</p>");
                 return;
             }
@@ -210,13 +214,13 @@
                 return;
             }
 
-            // If it neither opens nor closes, it's almost always a firewall or
-            // a wrong IP silently dropping packets.
+            // If it neither opens nor closes, it's almost always a firewall, a
+            // wrong IP, or (for wss) an untrusted certificate.
             clearTimeout(connectTimer);
             connectTimer = setTimeout(() => {
                 if (ws && ws.readyState === WebSocket.CONNECTING) {
                     try { ws.close(); } catch (e) { /* ignore */ }
-                    showError("Couldn't reach the server", commonCauses(url));
+                    showError("Couldn't reach the server", causes(url));
                 }
             }, 8000);
 
@@ -236,13 +240,17 @@
                     showError("Disconnected", "<p>Lost contact with the server" +
                         (ev && ev.code ? " (code " + ev.code + ")" : "") + ".</p>");
                 } else {
-                    showError("Couldn't reach the server", commonCauses(url));
+                    showError("Couldn't reach the server", causes(url));
                 }
             });
             ws.addEventListener("error", () => {
                 // The error event carries no detail; the close handler shows why.
                 elStatus.textContent = "error";
             });
+        }
+
+        function causes(url) {
+            return url.indexOf("wss://") === 0 ? secureCauses(url) : commonCauses(url);
         }
 
         function commonCauses(url) {
@@ -256,6 +264,24 @@
                 "<li>the server PC's <b>firewall</b> allows port " + SERVER_PORT +
                 " (Windows often blocks it the first time — click <i>Allow access</i> on the popup, or allow Python on Private networks)</li>" +
                 "</ul>";
+        }
+
+        function secureCauses(url) {
+            const https = "https://" + SERVER_HOST + ":" + SERVER_PORT;
+            const http = "http://" + SERVER_HOST + ":" + SERVER_PORT;
+            return "<p>This page is <b>https</b>, so the game must use a secure " +
+                "connection:</p>" +
+                "<p class=\"bh-addr\">" + url + "</p>" +
+                "<p>To allow it on this device:</p>" +
+                "<ol class=\"bh-list\">" +
+                "<li>start the server with <code>python server.py --https</code></li>" +
+                "<li>open <code>" + https + "</code> in <b>this</b> browser</li>" +
+                "<li>tap <b>Advanced</b> → <b>Proceed / Visit anyway</b> to trust the " +
+                "certificate (it's your own server)</li>" +
+                "<li>come back here and tap <b>Try again</b></li>" +
+                "</ol>" +
+                "<p><b>Easier:</b> skip certificates and open the game over http:</p>" +
+                "<p class=\"bh-addr\">" + http + "</p>";
         }
 
         function send(obj) {
