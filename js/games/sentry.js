@@ -753,7 +753,7 @@
     window.SGGames.sentry = {
         id: "sentry",
         name: "Sentry Swap",
-        emoji: "\u{1F3AF}",
+        emoji: "\u{1F47E}",
         tag: "Sleep darts for aliens, bombs for bots. Switch fast!",
         scoreLabel: "points",
         create: create
