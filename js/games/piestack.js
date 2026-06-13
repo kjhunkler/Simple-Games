@@ -19,6 +19,9 @@
         let cameraY, targetCameraY;
         let crumbs, rafId, lastTs;
         const PIE_H = 26;
+        const kids = !!host.kids;
+        const SPEED_SCALE = kids ? 0.62 : 1;
+        const PERFECT_TOL = kids ? 12 : 7;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -51,7 +54,7 @@
 
         function newMover() {
             const top = stack[stack.length - 1];
-            const speed = 170 + Math.min(score * 11, 330);
+            const speed = (170 + Math.min(score * 11, 330)) * SPEED_SCALE;
             const fromLeft = stack.length % 2 === 0;
             mover = {
                 x: fromLeft ? -top.w : W,
@@ -98,7 +101,7 @@
                 spawnCrumbs(crumbX, trimmed, pieScreenY(mover.y), mover.color);
             }
 
-            const perfect = trimmed < 7;
+            const perfect = trimmed < PERFECT_TOL;
             if (perfect) {
                 // Perfect drop: keep full width, snap into place, bonus point.
                 mover.x = top.x;

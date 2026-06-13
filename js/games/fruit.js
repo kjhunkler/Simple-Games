@@ -43,7 +43,11 @@
         let items, chunks, trail, score, lives, alive, started, elapsed;
         let spawnTimer, rafId, lastTs;
         let slicing = false;
-        const MAX_LIVES = 3;
+        const kids = !!host.kids;
+        const MAX_LIVES = kids ? 5 : 3;
+        const BOMB_SCALE = kids ? 0.45 : 1;
+        const SPAWN_BASE = kids ? 2.1 : 1.7;
+        const SPAWN_MIN = kids ? 1.15 : 0.85;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);

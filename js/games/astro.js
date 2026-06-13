@@ -12,6 +12,10 @@
         let lastShot, spawnTimer, spawnEvery;
         let rafId, lastTs;
         let touchId = null, touchOffsetX = 0, touchOffsetY = 0;
+        const kids = !!host.kids;
+        const ROCK_SPEED_SCALE = kids ? 0.68 : 1;
+        const SPAWN_BASE = kids ? 1.5 : 1.1;
+        const SPAWN_MIN = kids ? 0.55 : 0.34;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -37,7 +41,7 @@
             elapsed = 0;
             lastShot = 0;
             spawnTimer = 0;
-            spawnEvery = 1.1;
+            spawnEvery = SPAWN_BASE;
             lastTs = 0;
             host.setScore(0);
         }
@@ -45,7 +49,7 @@
         function spawnRock() {
             const r = Math.random() * 22 + 14;
             const x = Math.random() * (W - r * 2) + r;
-            const speed = (Math.random() * 40 + 55) + Math.min(elapsed * 2.2, 130);
+            const speed = ((Math.random() * 40 + 55) + Math.min(elapsed * 2.2, 130)) * ROCK_SPEED_SCALE;
             rocks.push({
                 x: x, y: -r - 10, r: r,
                 vx: (Math.random() - 0.5) * 50,
@@ -121,7 +125,7 @@
 
             // Spawn rocks
             spawnTimer += dt;
-            spawnEvery = Math.max(0.34, 1.1 - elapsed * 0.012);
+            spawnEvery = Math.max(SPAWN_MIN, SPAWN_BASE - elapsed * 0.012);
             if (spawnTimer >= spawnEvery) {
                 spawnTimer = 0;
                 spawnRock();

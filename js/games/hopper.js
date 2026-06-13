@@ -10,6 +10,9 @@
         let player, platforms, clouds, score, highestY, alive, started;
         let cameraY, rafId, lastTs;
         let steerX = null;
+        const kids = !!host.kids;
+        const GRAVITY = kids ? 1180 : 1500;
+        const JUMP_V = kids ? -700 : -640;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -48,8 +51,8 @@
         function spawnPlatform(y) {
             const w = 58 + Math.random() * 26;
             const difficulty = Math.min(score / 120, 1);
-            const movingChance = 0.12 + difficulty * 0.35;
-            const fragileChance = 0.08 + difficulty * 0.22;
+            const movingChance = (0.12 + difficulty * 0.35) * (kids ? 0.5 : 1);
+            const fragileChance = (0.08 + difficulty * 0.22) * (kids ? 0.5 : 1);
             const roll = Math.random();
             let type = "static";
             if (roll < movingChance) type = "moving";
@@ -80,7 +83,7 @@
             }
             if (Math.abs(player.vx) > 2) player.face = player.vx > 0 ? 1 : -1;
 
-            player.vy += 1500 * dt;
+            player.vy += GRAVITY * dt;
             player.x += player.vx * dt;
             player.y += player.vy * dt;
 
@@ -106,7 +109,7 @@
                         continue; // breaks, no bounce
                     }
                     player.y = p.y - player.r;
-                    player.vy = -640;
+                    player.vy = JUMP_V;
                     host.vibrate(6);
                     SGSound.play("jump");
                 }

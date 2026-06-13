@@ -14,6 +14,11 @@
         let paddle, ball, bricks, particles;
         let score, lives, level, alive, started, stuck;
         let rafId, lastTs;
+        const kids = !!host.kids;
+        const START_LIVES = kids ? 5 : 3;
+        const BALL_SPEED_SCALE = kids ? 0.74 : 1;
+        const PADDLE_FRAC = kids ? 0.4 : 0.3;
+        const PADDLE_MAX = kids ? 150 : 120;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -25,9 +30,9 @@
         }
 
         function reset() {
-            paddle = { w: Math.min(W * 0.3, 120), h: 14, x: W / 2 - Math.min(W * 0.3, 120) / 2, y: H - 56 };
+            paddle = { w: Math.min(W * PADDLE_FRAC, PADDLE_MAX), h: 14, x: W / 2 - Math.min(W * PADDLE_FRAC, PADDLE_MAX) / 2, y: H - 56 };
             score = 0;
-            lives = 3;
+            lives = START_LIVES;
             level = 1;
             alive = true;
             started = false;
@@ -47,7 +52,7 @@
             if (!stuck) return;
             stuck = false;
             started = true;
-            const speed = 380 + (level - 1) * 30;
+            const speed = (380 + (level - 1) * 30) * BALL_SPEED_SCALE;
             const a = -Math.PI / 2 + (Math.random() - 0.5) * 0.7;
             ball.vx = Math.cos(a) * speed;
             ball.vy = Math.sin(a) * speed;
@@ -240,7 +245,7 @@
             // Lives & level
             ctx.font = "16px system-ui, sans-serif";
             ctx.textAlign = "left";
-            for (let i = 0; i < 3; i++) {
+            for (let i = 0; i < START_LIVES; i++) {
                 ctx.globalAlpha = i < lives ? 1 : 0.2;
                 ctx.fillText("\u2764\uFE0F", 12 + i * 24, 30);
             }

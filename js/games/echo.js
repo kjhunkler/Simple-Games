@@ -17,6 +17,10 @@
         let seq, inputIndex, score, state, alive;
         let showTimer, lastShown, gapTimer, flash;
         let rafId, lastTs;
+        const kids = !!host.kids;
+        const STEP_BASE = kids ? 0.72 : 0.55;
+        const STEP_MIN = kids ? 0.42 : 0.3;
+        const STEP_RAMP = kids ? 0.01 : 0.015;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -46,7 +50,7 @@
         }
 
         function stepDur() {
-            return Math.max(0.3, 0.55 - seq.length * 0.015);
+            return Math.max(STEP_MIN, STEP_BASE - seq.length * STEP_RAMP);
         }
 
         function beginRound() {

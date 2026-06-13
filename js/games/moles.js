@@ -12,7 +12,12 @@
         let W, H, cellW, cellH, gridX, gridY, holeR;
         let holes, score, misses, alive, started, elapsed;
         let popTimer, rafId, lastTs;
-        const MAX_MISSES = 3;
+        const kids = !!host.kids;
+        const MAX_MISSES = kids ? 5 : 3;
+        const UP_BASE = kids ? 1.6 : 1.15;
+        const UP_MIN = kids ? 0.7 : 0.45;
+        const INTERVAL_BASE = kids ? 1.15 : 0.95;
+        const INTERVAL_MIN = kids ? 0.45 : 0.32;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -61,7 +66,7 @@
             hole.t = 0;
             hole.golden = Math.random() < 0.12;
             hole.face = Math.floor(Math.random() * 3);
-            hole.upFor = Math.max(0.45, 1.15 - elapsed * 0.012);
+            hole.upFor = Math.max(UP_MIN, UP_BASE - elapsed * 0.012);
         }
 
         function holeCenter(hole) {
@@ -77,7 +82,7 @@
 
             if (started) {
                 popTimer -= dt;
-                const interval = Math.max(0.32, 0.95 - elapsed * 0.014);
+                const interval = Math.max(INTERVAL_MIN, INTERVAL_BASE - elapsed * 0.014);
                 if (popTimer <= 0) {
                     popTimer = interval;
                     popRandomMole();
