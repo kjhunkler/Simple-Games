@@ -54,6 +54,13 @@
         padding:22px;width:min(330px,86%);text-align:center;box-shadow:0 18px 50px #000a;}
     .bh-card h2{margin:0 0 6px;font-size:22px;}
     .bh-card p{margin:6px 0 14px;font-size:14px;opacity:.85;line-height:1.4;}
+    .bh-errbody{text-align:left;font-size:13px;}
+    .bh-errbody p{margin:6px 0;}
+    .bh-list{text-align:left;margin:6px 0 12px;padding-left:18px;font-size:13px;opacity:.9;line-height:1.45;}
+    .bh-list li{margin:4px 0;}
+    .bh-addr{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0c0c16;border:1px solid #ffffff26;
+        border-radius:8px;padding:8px 10px;word-break:break-all;font-size:13px;opacity:1;}
+    .bh-errbody code{background:#ffffff1f;padding:1px 5px;border-radius:5px;font-size:12px;}
     .bh-card input{width:100%;box-sizing:border-box;padding:11px;border-radius:11px;border:1px solid #ffffff33;
         background:#0c0c16;color:#fff;font-size:14px;margin-bottom:12px;}
     .bh-card .field-label{display:block;text-align:left;font-size:12px;opacity:.7;margin:0 0 4px;}
@@ -168,40 +175,87 @@
 
         function clearCenter() { elCenter.innerHTML = ""; }
 
-        function showDisconnected(reason) {
+        function showError(title, htmlBody) {
+            elStatus.textContent = "offline";
             elCenter.innerHTML =
                 '<div class="bh-card">' +
-                '  <h2>Disconnected</h2>' +
-                '  <p>' + (reason || "Lost contact with the server.") + "</p>" +
+                '  <h2>' + title + "</h2>" +
+                '  <div class="bh-errbody">' + htmlBody + "</div>" +
                 '  <button class="bh-btn bh-retry">Try again</button>' +
                 "</div>";
             elCenter.querySelector(".bh-retry").addEventListener("click", showJoin);
         }
 
         // ---- networking -------------------------------------------------- //
+        let connectTimer = null;
+
         function connect(url) {
             clearCenter();
             elStatus.textContent = "connecting…";
+
+            // The #1 mobile failure: an https page can't open an insecure ws://.
+            if (window.location.protocol === "https:" && url.indexOf("ws://") === 0) {
+                showError("Can't connect (https blocks it)",
+                    "<p>This page is loaded over <b>https</b>, and browsers block an " +
+                    "insecure <code>ws://</code> connection from it (“mixed content”).</p>" +
+                    "<p><b>Fix:</b> open the game straight from the server instead:</p>" +
+                    "<p class=\"bh-addr\">http://" + SERVER_HOST + ":" + SERVER_PORT + "</p>");
+                return;
+            }
+
             try {
                 ws = new WebSocket(url);
             } catch (e) {
-                showDisconnected("That address didn't work: " + e.message);
+                showError("That address didn't work", "<p>" + e.message + "</p>");
                 return;
             }
+
+            // If it neither opens nor closes, it's almost always a firewall or
+            // a wrong IP silently dropping packets.
+            clearTimeout(connectTimer);
+            connectTimer = setTimeout(() => {
+                if (ws && ws.readyState === WebSocket.CONNECTING) {
+                    try { ws.close(); } catch (e) { /* ignore */ }
+                    showError("Couldn't reach the server", commonCauses(url));
+                }
+            }, 8000);
+
             ws.addEventListener("open", () => {
+                clearTimeout(connectTimer);
                 connected = true;
                 elStatus.textContent = "connected";
                 send({ type: "join", name: myName, avatar: myAvatar });
             });
             ws.addEventListener("message", (ev) => onMessage(ev.data));
-            ws.addEventListener("close", () => {
+            ws.addEventListener("close", (ev) => {
+                clearTimeout(connectTimer);
                 connected = false;
                 elStatus.textContent = "offline";
-                if (hud) showDisconnected("The connection closed. Is the server running?");
+                if (!hud) return;
+                if (myId) {
+                    showError("Disconnected", "<p>Lost contact with the server" +
+                        (ev && ev.code ? " (code " + ev.code + ")" : "") + ".</p>");
+                } else {
+                    showError("Couldn't reach the server", commonCauses(url));
+                }
             });
             ws.addEventListener("error", () => {
+                // The error event carries no detail; the close handler shows why.
                 elStatus.textContent = "error";
             });
+        }
+
+        function commonCauses(url) {
+            return "<p>Tried to reach:</p>" +
+                "<p class=\"bh-addr\">" + url + "</p>" +
+                "<p>Check that:</p>" +
+                "<ul class=\"bh-list\">" +
+                "<li>the server (<code>server.py</code>) is running</li>" +
+                "<li>this device is on the <b>same Wi‑Fi</b> as the server</li>" +
+                "<li>the address above is the server's current IP</li>" +
+                "<li>the server PC's <b>firewall</b> allows port " + SERVER_PORT +
+                " (Windows often blocks it the first time — click <i>Allow access</i> on the popup, or allow Python on Private networks)</li>" +
+                "</ul>";
         }
 
         function send(obj) {
