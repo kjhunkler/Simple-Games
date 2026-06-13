@@ -11,7 +11,7 @@
     const GAME_ORDER = [
         "snake", "astro", "piestack", "flappy", "moles", "memory",
         "echo", "bricks", "hopper", "fruit", "tiles", "colorrush",
-        "beatloop", "taptiles", "stopspin", "lanedash", "stormquest"
+        "beatloop", "taptiles", "stopspin", "lanedash", "stormquest", "sentry"
     ];
 
     const $ = (sel) => document.querySelector(sel);
