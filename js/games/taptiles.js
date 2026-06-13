@@ -14,7 +14,10 @@
         let W, H, laneW, tileH;
         let tiles, score, alive, started, elapsed;
         let speed, spawnGap, nextSpawnY, noteIdx, noteDir;
+        let lives, grace;
         let rafId, lastTs;
+        const MAX_LIVES = 3;
+        const GRACE_TIME = 1.5;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -38,6 +41,8 @@
             nextSpawnY = -tileH;
             noteIdx = Math.floor(Math.random() * SCALE.length);
             noteDir = 1;
+            lives = MAX_LIVES;
+            grace = 0;
             lastTs = 0;
             // Pre-fill a column of tiles marching down.
             for (let i = 0; i < 4; i++) spawnTile();
@@ -69,18 +74,25 @@
             nextSpawnY -= spawnGap;
         }
 
-        function die() {
-            if (!alive) return;
-            alive = false;
+        function loseLife() {
+            if (!alive || grace > 0) return;
+            lives -= 1;
             host.vibrate([70, 40, 90]);
             SGSound.play("wrong");
-            setTimeout(() => host.gameOver(score), 700);
+            if (lives <= 0) {
+                alive = false;
+                setTimeout(() => host.gameOver(score), 700);
+            } else {
+                // Grace period: briefly forgiving so you can find the beat again.
+                grace = GRACE_TIME;
+            }
         }
 
         function update(dt) {
             if (!alive || !started) return;
             elapsed += dt;
             speed = 240 + Math.min(elapsed * 9, 320);
+            if (grace > 0) grace = Math.max(0, grace - dt);
 
             for (const t of tiles) {
                 t.y += speed * dt;
@@ -90,8 +102,13 @@
             // A live tile slipping past the bottom = miss.
             for (const t of tiles) {
                 if (!t.hit && t.y > H) {
-                    die();
-                    return;
+                    if (grace > 0) {
+                        t.hit = true; // forgiven during grace
+                    } else {
+                        t.hit = true;
+                        loseLife();
+                        if (!alive) return;
+                    }
                 }
             }
 
@@ -127,7 +144,7 @@
 
             if (!target || target !== lowest || target.y + tileH < 0) {
                 // Tapped an empty/wrong lane.
-                die();
+                loseLife();
                 return;
             }
 
@@ -182,6 +199,30 @@
                 ctx.fillStyle = "rgba(154, 160, 195, 0.9)";
                 ctx.fillText("Always tap the lowest tile \u2014 don't let one pass!", W / 2, H * 0.42 + 26);
             }
+
+            // Lives hearts
+            for (let i = 0; i < MAX_LIVES; i++) {
+                ctx.globalAlpha = i < lives ? 1 : 0.2;
+                drawHeart(24 + i * 28, 26, 9);
+            }
+            ctx.globalAlpha = 1;
+
+            // Grace flash: red vignette pulse
+            if (grace > 0) {
+                ctx.globalAlpha = grace / GRACE_TIME * 0.25 * (0.6 + Math.sin(grace * 14) * 0.4);
+                ctx.fillStyle = "#ff4d6d";
+                ctx.fillRect(0, 0, W, H);
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        function drawHeart(x, y, r) {
+            ctx.fillStyle = "#ff5d5d";
+            ctx.beginPath();
+            ctx.moveTo(x, y + r * 0.9);
+            ctx.bezierCurveTo(x - r * 1.4, y - r * 0.2, x - r * 0.7, y - r * 1.2, x, y - r * 0.3);
+            ctx.bezierCurveTo(x + r * 0.7, y - r * 1.2, x + r * 1.4, y - r * 0.2, x, y + r * 0.9);
+            ctx.fill();
         }
 
         function loop(ts) {
