@@ -11,6 +11,13 @@
         let score, lives, alive, started, resultFlash;
         let rafId, lastTs;
         const MAX_LIVES = 3;
+        const kids = !!host.kids;
+        const SPEED_BASE = kids ? 1.7 : 2.4;
+        const SPEED_RAMP = kids ? 0.09 : 0.14;
+        const SPEED_MAX = kids ? 5 : 7.5;
+        const ZONE_BASE = kids ? 1.05 : 0.85;
+        const ZONE_MIN = kids ? 0.42 : 0.28;
+        const ZONE_RAMP = kids ? 0.015 : 0.022;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -26,7 +33,7 @@
 
         function reset() {
             angle = -Math.PI / 2;
-            speed = 2.4;
+            speed = SPEED_BASE;
             dir = 1;
             score = 0;
             lives = MAX_LIVES;
@@ -39,7 +46,7 @@
         }
 
         function newZone() {
-            zoneSize = Math.max(0.28, 0.85 - score * 0.022);
+            zoneSize = Math.max(ZONE_MIN, ZONE_BASE - score * ZONE_RAMP);
             perfectSize = zoneSize * 0.3;
             // Place the zone away from the needle so it's never an instant win.
             const needle = norm(angle);
@@ -95,7 +102,7 @@
 
             host.setScore(score);
             // Speed up, reverse direction sometimes, move the zone.
-            speed = Math.min(2.4 + score * 0.14, 7.5);
+            speed = Math.min(SPEED_BASE + score * SPEED_RAMP, SPEED_MAX);
             if (Math.random() < 0.35) dir = -dir;
             newZone();
         }

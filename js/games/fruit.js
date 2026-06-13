@@ -77,7 +77,7 @@
             const difficulty = Math.min(elapsed / 60, 1);
             const count = 1 + Math.floor(Math.random() * (2 + difficulty * 2));
             for (let i = 0; i < count; i++) {
-                const isBomb = started && Math.random() < 0.12 + difficulty * 0.1;
+                const isBomb = started && Math.random() < (0.12 + difficulty * 0.1) * BOMB_SCALE;
                 const x = W * 0.15 + Math.random() * W * 0.7;
                 const fi = Math.floor(Math.random() * FRUITS.length);
                 items.push({
@@ -149,7 +149,7 @@
             if (alive && started) {
                 spawnTimer -= dt;
                 if (spawnTimer <= 0) {
-                    spawnTimer = Math.max(0.85, 1.7 - elapsed * 0.015);
+                    spawnTimer = Math.max(SPAWN_MIN, SPAWN_BASE - elapsed * 0.015);
                     spawnWave();
                 }
             } else if (alive && !started && items.length === 0) {

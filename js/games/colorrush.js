@@ -18,8 +18,15 @@
         let W, H;
         let bubbles, targetIdx, score, lives, alive, started, elapsed;
         let spawnTimer, switchTimer, pulse;
+        let switchInterval, warning, warnPulse, changeFlash;
         let rafId, lastTs;
         const MAX_LIVES = 3;
+        const kids = !!host.kids;
+        const DIFF_RAMP = kids ? 110 : 75;
+        const SPEED_SCALE = kids ? 0.7 : 1;
+        const SWITCH_BASE = kids ? 12 : 9;
+        const SWITCH_MIN = kids ? 7 : 5;
+        const WARN_LEAD = kids ? 2.6 : 1.8;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -40,13 +47,17 @@
             elapsed = 0;
             spawnTimer = 0;
             switchTimer = 0;
+            switchInterval = SWITCH_BASE;
+            warning = false;
+            warnPulse = 0;
+            changeFlash = 0;
             pulse = 0;
             lastTs = 0;
             host.setScore(0);
         }
 
         function difficulty() {
-            return Math.min(elapsed / 75, 1);
+            return Math.min(elapsed / DIFF_RAMP, 1);
         }
 
         function spawnBubble() {
@@ -61,7 +72,7 @@
                 x: r + Math.random() * (W - r * 2),
                 y: H + r,
                 r: r,
-                vy: -(46 + Math.random() * 30 + d * 55),
+                vy: -(46 + Math.random() * 30 + d * 55) * SPEED_SCALE,
                 wob: Math.random() * Math.PI * 2,
                 wobSpeed: 1.2 + Math.random() * 1.6,
                 color: idx,
@@ -77,7 +88,11 @@
             } while (next === targetIdx);
             targetIdx = next;
             pulse = 1;
-            SGSound.play("tap");
+            warning = false;
+            warnPulse = 0;
+            changeFlash = 1;
+            host.vibrate([30, 40, 30]);
+            SGSound.play("match");
         }
 
         function loseLife() {
@@ -92,6 +107,8 @@
 
         function update(dt) {
             if (pulse > 0) pulse = Math.max(0, pulse - dt * 2.2);
+            if (changeFlash > 0) changeFlash = Math.max(0, changeFlash - dt * 1.6);
+            if (warning) warnPulse += dt * 7;
             if (!alive) return;
             if (!started) return;
 
@@ -105,7 +122,15 @@
             }
 
             switchTimer += dt;
-            if (switchTimer >= Math.max(5, 9 - d * 4)) {
+            switchInterval = Math.max(SWITCH_MIN, SWITCH_BASE - d * 4);
+            // Flag an upcoming change so the player gets a heads-up countdown.
+            if (!warning && switchTimer >= switchInterval - WARN_LEAD) {
+                warning = true;
+                warnPulse = 0;
+                host.vibrate(15);
+                SGSound.play("flip");
+            }
+            if (switchTimer >= switchInterval) {
                 switchTimer = 0;
                 switchTarget();
             }
@@ -195,19 +220,49 @@
             }
             ctx.globalAlpha = 1;
 
+            // Warning border glow as a color change approaches.
+            if (warning && alive && started) {
+                const blink = 0.5 + 0.5 * Math.sin(warnPulse);
+                ctx.save();
+                ctx.lineWidth = 12;
+                ctx.strokeStyle = COLORS[targetIdx].value;
+                ctx.globalAlpha = 0.25 + blink * 0.5;
+                ctx.strokeRect(6, 6, W - 12, H - 12);
+                ctx.restore();
+                ctx.globalAlpha = 1;
+            }
+
+            // Full-screen flash the instant the color changes.
+            if (changeFlash > 0) {
+                ctx.save();
+                ctx.globalAlpha = changeFlash * 0.5;
+                ctx.fillStyle = COLORS[targetIdx].value;
+                ctx.fillRect(0, 0, W, H);
+                ctx.restore();
+                ctx.globalAlpha = 1;
+            }
+
             // Target banner
             const bannerY = 26;
-            const scale = 1 + pulse * 0.18;
+            const warnBlink = warning ? 0.5 + 0.5 * Math.sin(warnPulse) : 0;
+            const scale = 1 + pulse * 0.18 + changeFlash * 0.22 + warnBlink * 0.12;
             ctx.save();
             ctx.translate(W / 2, bannerY + 14);
             ctx.scale(scale, scale);
-            ctx.fillStyle = "rgba(18, 18, 31, 0.78)";
             const bw = 190;
+            if (warning) {
+                // Highlight the banner so the upcoming change is unmissable.
+                ctx.fillStyle = COLORS[targetIdx].value;
+                ctx.globalAlpha = 0.25 + warnBlink * 0.55;
+                roundRect(-bw / 2 - 5, -29, bw + 10, 58, 28);
+                ctx.globalAlpha = 1;
+            }
+            ctx.fillStyle = "rgba(18, 18, 31, 0.78)";
             roundRect(-bw / 2, -24, bw, 48, 24);
-            ctx.fillStyle = "rgba(242, 243, 255, 0.75)";
-            ctx.font = "700 11px system-ui, sans-serif";
+            ctx.fillStyle = warning ? COLORS[targetIdx].value : "rgba(242, 243, 255, 0.75)";
+            ctx.font = "800 11px system-ui, sans-serif";
             ctx.textAlign = "center";
-            ctx.fillText("POP ONLY", 0, -7);
+            ctx.fillText(warning ? "\u26A0\uFE0F CHANGING SOON \u26A0\uFE0F" : "POP ONLY", 0, -7);
             ctx.fillStyle = COLORS[targetIdx].value;
             ctx.font = "800 21px system-ui, sans-serif";
             ctx.fillText(COLORS[targetIdx].name, 0, 15);
@@ -231,6 +286,7 @@
                 ctx.fillStyle = "rgba(154, 160, 195, 0.9)";
                 ctx.fillText("Pop bubbles that match the color above", W / 2, H * 0.42 + 26);
                 ctx.fillText("Wrong color or escaped match = lost heart", W / 2, H * 0.42 + 48);
+                ctx.fillText("Watch for the \u26A0\uFE0F warning \u2014 the color changes!", W / 2, H * 0.42 + 70);
             }
         }
 
