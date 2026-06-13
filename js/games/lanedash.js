@@ -22,8 +22,10 @@
         let spawnTimer, speed;
         let rafId, lastTs;
         let touchStartX = 0, touchStartY = 0, touchMoved = false;
-        const MAX_LIVES = 3;
-        const GRACE_TIME = 2.2;
+        const kids = !!host.kids;
+        const MAX_LIVES = kids ? 5 : 3;
+        const GRACE_TIME = kids ? 3 : 2.2;
+        const SPEED_SCALE = kids ? 0.62 : 1;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -60,7 +62,7 @@
             lives = MAX_LIVES;
             invuln = 0;
             spawnTimer = 0.4;
-            speed = 300;
+            speed = 300 * SPEED_SCALE;
             lastTs = 0;
             host.setScore(0);
         }
@@ -169,7 +171,7 @@
             if (!alive || !started) return;
 
             distance += speed * dt;
-            speed = 300 + Math.min(distance / 30, 320);
+            speed = (300 + Math.min(distance / 30, 320)) * SPEED_SCALE;
 
             spawnTimer -= dt;
             if (spawnTimer <= 0) {

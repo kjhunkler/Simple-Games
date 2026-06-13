@@ -13,6 +13,10 @@
         let snake, dir, nextDir, food, score, alive, started;
         let tickMs, lastTick, rafId;
         let touchStartX = 0, touchStartY = 0, touchMoved = false;
+        const kids = !!host.kids;
+        const START_TICK = kids ? 210 : 170;
+        const MIN_TICK = kids ? 110 : 75;
+        const RAMP = kids ? 2.5 : 4;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -35,7 +39,7 @@
             score = 0;
             alive = true;
             started = false;
-            tickMs = 170;
+            tickMs = START_TICK;
             lastTick = 0;
             spawnFood();
             host.setScore(0);
@@ -77,7 +81,7 @@
                 host.setScore(score);
                 host.vibrate(15);
                 SGSound.play("eat");
-                tickMs = Math.max(75, 170 - score * 4);
+                tickMs = Math.max(MIN_TICK, START_TICK - score * RAMP);
                 spawnFood();
             } else {
                 snake.pop();

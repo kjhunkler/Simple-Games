@@ -31,6 +31,16 @@
         return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     }
 
+    /** Returns the score map for the profile's current mode, creating it if needed. */
+    function scoreMap(profile) {
+        if (profile.kids) {
+            if (!profile.kidsScores) profile.kidsScores = {};
+            return profile.kidsScores;
+        }
+        if (!profile.scores) profile.scores = {};
+        return profile.scores;
+    }
+
     const Storage = {
         getProfiles() {
             return state.profiles.slice();
@@ -54,12 +64,14 @@
             save();
         },
 
-        createProfile(name, avatar) {
+        createProfile(name, avatar, kids) {
             const profile = {
                 id: uid(),
                 name: name,
                 avatar: avatar,
+                kids: !!kids,
                 scores: {},
+                kidsScores: {},
                 createdAt: Date.now()
             };
             state.profiles.push(profile);
@@ -67,13 +79,26 @@
             return profile;
         },
 
-        updateProfile(id, name, avatar) {
+        updateProfile(id, name, avatar, kids) {
             const profile = this.getProfile(id);
             if (!profile) return null;
             profile.name = name;
             profile.avatar = avatar;
+            if (kids !== undefined) profile.kids = !!kids;
             save();
             return profile;
+        },
+
+        isKidsMode(id) {
+            const profile = this.getProfile(id);
+            return !!(profile && profile.kids);
+        },
+
+        setKidsMode(id, on) {
+            const profile = this.getProfile(id);
+            if (!profile) return;
+            profile.kids = !!on;
+            save();
         },
 
         deleteProfile(id) {
@@ -84,18 +109,26 @@
 
         getBestScore(profileId, gameId) {
             const profile = this.getProfile(profileId);
-            if (!profile || !profile.scores) return 0;
-            return profile.scores[gameId] || 0;
+            if (!profile) return 0;
+            const scores = scoreMap(profile);
+            return scores[gameId] || 0;
+        },
+
+        /** Returns a copy of the score map for the profile's current mode. */
+        getScores(profileId) {
+            const profile = this.getProfile(profileId);
+            if (!profile) return {};
+            return Object.assign({}, scoreMap(profile));
         },
 
         /** Returns true if this is a new best score. */
         submitScore(profileId, gameId, score) {
             const profile = this.getProfile(profileId);
             if (!profile) return false;
-            if (!profile.scores) profile.scores = {};
-            const best = profile.scores[gameId] || 0;
+            const scores = scoreMap(profile);
+            const best = scores[gameId] || 0;
             if (score > best) {
-                profile.scores[gameId] = score;
+                scores[gameId] = score;
                 save();
                 return true;
             }

@@ -25,6 +25,7 @@
 
     let editingProfileId = null;
     let selectedAvatar = AVATARS[0];
+    let kidsModeSelected = false;
     let currentGameDef = null;
     let currentGame = null;
     let deleteArmed = false;
@@ -99,7 +100,7 @@
     }
 
     function totalScoreLabel(profile) {
-        const scores = profile.scores || {};
+        const scores = SGStorage.getScores(profile.id);
         const parts = [];
         for (const id of GAME_ORDER) {
             if (scores[id]) {
@@ -119,6 +120,7 @@
         $("#profile-edit-title").textContent = profile ? "Edit Player" : "New Player";
         $("#profile-name").value = profile ? profile.name : "";
         selectedAvatar = profile ? profile.avatar : AVATARS[Math.floor(Math.random() * AVATARS.length)];
+        kidsModeSelected = profile ? !!profile.kids : false;
 
         const del = $("#btn-delete-profile");
         del.classList.toggle("hidden", !profile);
@@ -126,6 +128,7 @@
         del.classList.remove("confirm");
 
         renderAvatarGrid();
+        renderKidsToggle();
         show("profileEdit");
         if (!profile) {
             setTimeout(() => $("#profile-name").focus(), 250);
@@ -149,6 +152,10 @@
         }
     }
 
+    function renderKidsToggle() {
+        $("#btn-kids-toggle").setAttribute("aria-pressed", kidsModeSelected ? "true" : "false");
+    }
+
     function saveProfile() {
         const name = $("#profile-name").value.trim();
         if (!name) {
@@ -157,9 +164,9 @@
             return;
         }
         if (editingProfileId) {
-            SGStorage.updateProfile(editingProfileId, name, selectedAvatar);
+            SGStorage.updateProfile(editingProfileId, name, selectedAvatar, kidsModeSelected);
         } else {
-            const p = SGStorage.createProfile(name, selectedAvatar);
+            const p = SGStorage.createProfile(name, selectedAvatar, kidsModeSelected);
             SGStorage.setActiveProfile(p.id);
             renderHome();
             show("home");
@@ -205,6 +212,7 @@
     /* ---------- Game hosting ---------- */
     const gameHost = {
         canvas: null,
+        kids: false,
         setScore(score) {
             $("#game-score").textContent = score;
         },
@@ -229,9 +237,13 @@
         if (!def) return;
         currentGameDef = def;
 
+        const profile = SGStorage.getActiveProfile();
+        gameHost.kids = profile ? !!profile.kids : false;
+
         SGSound.unlock();
         SGSound.play("tap");
         $("#game-title").textContent = def.emoji + " " + def.name;
+        $("#game-kids-badge").classList.toggle("hidden", !gameHost.kids);
         gameHost.setScore(0);
         updateGameBestLabel();
         $("#game-overlay").classList.add("hidden");
@@ -274,6 +286,12 @@
         show("profiles");
     });
     $("#btn-save-profile").addEventListener("click", saveProfile);
+    $("#btn-kids-toggle").addEventListener("click", function () {
+        kidsModeSelected = !kidsModeSelected;
+        renderKidsToggle();
+        vibrate(8);
+        SGSound.play("tap");
+    });
     $("#profile-name").addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); saveProfile(); }
     });

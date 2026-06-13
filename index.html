@@ -38,6 +38,13 @@
             <input id="profile-name" type="text" maxlength="14" autocomplete="off" placeholder="Player name" />
             <label class="field-label">Pick an avatar</label>
             <div id="avatar-grid" class="avatar-grid"></div>
+            <button id="btn-kids-toggle" class="kids-toggle" type="button" aria-pressed="false">
+                <span class="kids-toggle-info">
+                    <span class="kids-toggle-title">&#129528; Kids Mode</span>
+                    <span class="kids-toggle-sub">Slower speeds &amp; extra hearts</span>
+                </span>
+                <span class="kids-switch"><span class="kids-knob"></span></span>
+            </button>
             <button id="btn-save-profile" class="btn btn-primary btn-big">Save</button>
             <button id="btn-delete-profile" class="btn btn-danger btn-big hidden">Delete Player</button>
         </section>
@@ -68,6 +75,7 @@
                     <span id="game-best">Best 0</span>
                 </div>
                 <span id="game-title" class="game-title-label"></span>
+                <span id="game-kids-badge" class="kids-badge hidden">&#129528; Kids</span>
             </header>
             <div id="game-stage" class="game-stage">
                 <canvas id="game-canvas"></canvas>

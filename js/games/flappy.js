@@ -10,6 +10,12 @@
         let W, H;
         let bird, pipes, clouds, score, alive, started;
         let spawnTimer, rafId, lastTs;
+        const kids = !!host.kids;
+        const GAP_BASE = kids ? 230 : 195;
+        const GAP_MIN = kids ? 185 : 145;
+        const SCROLL_BASE = kids ? 120 : 160;
+        const GRAVITY = kids ? 1100 : 1400;
+        const FLAP_V = kids ? -360 : -400;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -43,14 +49,14 @@
         function flap() {
             if (!alive) return;
             started = true;
-            bird.vy = -400;
+            bird.vy = FLAP_V;
             bird.wing = 1;
             host.vibrate(8);
             SGSound.play("flap");
         }
 
         function spawnPipe() {
-            const gap = Math.max(145, 195 - score * 2.5);
+            const gap = Math.max(GAP_MIN, GAP_BASE - score * 2.5);
             const margin = 70;
             const gy = margin + Math.random() * Math.max(H - margin * 2 - gap, 40);
             pipes.push({ x: W + PIPE_W, gapY: gy, gapH: gap, passed: false });
@@ -77,7 +83,7 @@
                 return;
             }
 
-            bird.vy += 1400 * dt;
+            bird.vy += GRAVITY * dt;
             bird.y += bird.vy * dt;
             bird.rot = Math.max(-0.5, Math.min(1.2, bird.vy / 600));
 
@@ -90,7 +96,7 @@
                 return;
             }
 
-            const speed = 160 + Math.min(score * 3, 80);
+            const speed = SCROLL_BASE + Math.min(score * 3, 80);
             spawnTimer -= dt;
             if (spawnTimer <= 0) {
                 spawnTimer = 1.5;

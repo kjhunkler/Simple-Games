@@ -16,8 +16,10 @@
         let speed, spawnGap, nextSpawnY, noteIdx, noteDir;
         let lives, grace;
         let rafId, lastTs;
-        const MAX_LIVES = 3;
-        const GRACE_TIME = 1.5;
+        const kids = !!host.kids;
+        const MAX_LIVES = kids ? 5 : 3;
+        const GRACE_TIME = kids ? 2.5 : 1.5;
+        const SPEED_SCALE = kids ? 0.62 : 1;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -36,7 +38,7 @@
             alive = true;
             started = false;
             elapsed = 0;
-            speed = 240;
+            speed = 240 * SPEED_SCALE;
             spawnGap = tileH * 1.55;
             nextSpawnY = -tileH;
             noteIdx = Math.floor(Math.random() * SCALE.length);
@@ -91,7 +93,7 @@
         function update(dt) {
             if (!alive || !started) return;
             elapsed += dt;
-            speed = 240 + Math.min(elapsed * 9, 320);
+            speed = (240 + Math.min(elapsed * 9, 320)) * SPEED_SCALE;
             if (grace > 0) grace = Math.max(0, grace - dt);
 
             for (const t of tiles) {

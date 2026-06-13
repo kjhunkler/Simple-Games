@@ -13,9 +13,11 @@
         let shieldTime, speedBoost;
         let speed, spawnX, rafId, lastTs;
 
-        const MAX_LIVES = 3;
-        const GRACE_TIME = 2;
-        const CHARGE_FULL = 0.9;   // seconds of holding for max bolt
+        const kids = !!host.kids;
+        const MAX_LIVES = kids ? 5 : 3;
+        const GRACE_TIME = kids ? 3 : 2;
+        const SPEED_SCALE = kids ? 0.66 : 1;
+        const CHARGE_FULL = kids ? 0.6 : 0.9;   // seconds of holding for max bolt
         const TAP_MAX = 0.18;      // press shorter than this = jump
 
         function resize() {

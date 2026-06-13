@@ -246,6 +246,59 @@ body {
     box-shadow: 0 0 0 3px rgba(255, 77, 141, 0.25);
 }
 
+/* ---------- Kids mode toggle ---------- */
+.kids-toggle {
+    appearance: none;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 10px;
+    padding: 14px 16px;
+    border: 2px solid var(--card-2);
+    border-radius: var(--radius);
+    background: var(--bg-2);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+.kids-toggle[aria-pressed="true"] {
+    border-color: #5ef58a;
+    background: rgba(94, 245, 138, 0.08);
+}
+.kids-toggle-info {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    text-align: left;
+}
+.kids-toggle-title { font-weight: 700; font-size: 16px; }
+.kids-toggle-sub { color: var(--muted); font-size: 13px; }
+.kids-switch {
+    flex-shrink: 0;
+    width: 52px;
+    height: 30px;
+    border-radius: 999px;
+    background: var(--card-2);
+    position: relative;
+    transition: background 120ms ease;
+}
+.kids-toggle[aria-pressed="true"] .kids-switch { background: #5ef58a; }
+.kids-knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 120ms ease;
+}
+.kids-toggle[aria-pressed="true"] .kids-knob { transform: translateX(22px); }
+
 /* ---------- Home ---------- */
 .header-actions {
     display: flex;
@@ -271,6 +324,16 @@ body {
 .profile-chip:active { transform: scale(0.96); }
 .profile-chip .chip-avatar { font-size: 24px; }
 .profile-chip .chip-switch { color: var(--muted); font-size: 11px; font-weight: 600; }
+
+.kids-badge {
+    background: rgba(94, 245, 138, 0.16);
+    color: #5ef58a;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
 
 .section-title {
     margin: 4px 0 0;
