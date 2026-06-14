@@ -33,18 +33,16 @@
     .bh-inv button{pointer-events:auto;width:34px;height:34px;border-radius:10px;border:none;
         background:#ffffff26;font-size:20px;cursor:pointer;padding:0;}
     .bh-inv button.target{box-shadow:inset 0 0 0 2px #39d98a;}
-    .bh-inv button.held{outline:3px solid #ffd166;transform:translateY(-3px);background:#ffd16633;}
     .bh-empty{opacity:.55;font-size:12px;}
-    .bh-hint{position:absolute;left:50%;bottom:150px;transform:translateX(-50%);
-        background:#12121fcc;padding:7px 14px;border-radius:20px;font-size:13px;font-weight:600;
-        white-space:nowrap;}
-    .bh-dpad{position:absolute;left:14px;bottom:18px;width:150px;height:150px;pointer-events:none;}
-    .bh-dpad button{position:absolute;width:50px;height:50px;border:none;border-radius:12px;
-        background:#ffffff2b;color:#fff;font-size:22px;pointer-events:auto;cursor:pointer;
-        display:flex;align-items:center;justify-content:center;}
-    .bh-dpad button:active{background:#ffffff4d;}
-    .bh-dpad .up{left:50px;top:0;}.bh-dpad .down{left:50px;top:100px;}
-    .bh-dpad .left{left:0;top:50px;}.bh-dpad .right{left:100px;top:50px;}
+    .bh-stick{position:absolute;left:26px;bottom:30px;width:128px;height:128px;border-radius:50%;
+        background:radial-gradient(circle at 50% 45%,#ffffff26,#ffffff10 70%,#ffffff05);
+        border:2px solid #ffffff33;pointer-events:auto;touch-action:none;
+        box-shadow:0 6px 20px #0006;}
+    .bh-knob{position:absolute;left:50%;top:50%;width:58px;height:58px;border-radius:50%;
+        margin:-29px 0 0 -29px;background:radial-gradient(circle at 40% 35%,#ffffffcc,#9fb0ff 80%);
+        box-shadow:0 4px 12px #0007;will-change:transform;}
+    .bh-row{display:flex;gap:10px;margin-top:8px;}
+    .bh-row .bh-btn{margin-top:0;}
     .bh-ready{position:absolute;right:16px;bottom:24px;pointer-events:auto;border:none;
         padding:14px 20px;border-radius:16px;font-size:16px;font-weight:800;cursor:pointer;
         background:#39d98a;color:#06281a;display:none;}
@@ -113,14 +111,30 @@
         let havePos = false;
         let captureTime = 3.0;
 
-        let heldBugId = null;              // inventory item selected "in hand"
         let prevInvCount = 0;
         let lastWinner = null;
         const keys = { up: false, down: false, left: false, right: false };
+        const joy = { active: false, dx: 0, dy: 0, pid: null }; // analog -1..1
         let lastMoveSent = 0, rafId = null, lastTs = 0;
+        let promptOpen = false;
+
+        // Decorative scenery, generated once so it stays put frame to frame.
+        const tufts = [];
+        for (let i = 0; i < 170; i++) {
+            tufts.push({
+                x: Math.random() * world.w,
+                y: HORIZON + 14 + Math.random() * (world.h - HORIZON - 24),
+                s: 0.7 + Math.random() * 0.9
+            });
+        }
+        const clouds = [];
+        for (let i = 0; i < 5; i++) {
+            clouds.push({ x: Math.random(), y: 0.18 + Math.random() * 0.5, s: 0.7 + Math.random(), sp: 5 + Math.random() * 8 });
+        }
+        const mountains = makeMountains();
 
         // ---- HUD DOM ----------------------------------------------------- //
-        let hud, elTargets, elInv, elHint, elReady, elCenter, elStatus;
+        let hud, elTargets, elInv, elReady, elCenter, elStatus, elStick, elKnob;
 
         function injectStyle() {
             if (document.getElementById(STYLE_ID)) return;
@@ -139,32 +153,23 @@
                 '  <div class="bh-inv"></div>' +
                 '</div>' +
                 '<div class="bh-status">connecting…</div>' +
-                '<div class="bh-hint bh-hidden"></div>' +
-                '<div class="bh-dpad">' +
-                '  <button class="up" data-dir="up">▲</button>' +
-                '  <button class="down" data-dir="down">▼</button>' +
-                '  <button class="left" data-dir="left">◀</button>' +
-                '  <button class="right" data-dir="right">▶</button>' +
-                '</div>' +
+                '<div class="bh-stick"><div class="bh-knob"></div></div>' +
                 '<button class="bh-ready">I\'m ready</button>' +
                 '<div class="bh-center"></div>';
             stage.appendChild(hud);
             elTargets = hud.querySelector(".bh-targets");
             elInv = hud.querySelector(".bh-inv");
-            elHint = hud.querySelector(".bh-hint");
             elReady = hud.querySelector(".bh-ready");
             elCenter = hud.querySelector(".bh-center");
             elStatus = hud.querySelector(".bh-status");
+            elStick = hud.querySelector(".bh-stick");
+            elKnob = hud.querySelector(".bh-knob");
 
-            hud.querySelectorAll(".bh-dpad button").forEach((b) => {
-                const dir = b.dataset.dir;
-                const down = (e) => { e.preventDefault(); keys[dir] = true; };
-                const up = (e) => { e.preventDefault(); keys[dir] = false; };
-                b.addEventListener("pointerdown", down);
-                b.addEventListener("pointerup", up);
-                b.addEventListener("pointerleave", up);
-                b.addEventListener("pointercancel", up);
-            });
+            elStick.addEventListener("pointerdown", stickStart);
+            elStick.addEventListener("pointermove", stickMove);
+            elStick.addEventListener("pointerup", stickEnd);
+            elStick.addEventListener("pointercancel", stickEnd);
+            elStick.addEventListener("pointerleave", stickEnd);
 
             elReady.addEventListener("click", () => {
                 const meP = myPlayer();
@@ -173,11 +178,46 @@
             });
         }
 
+        // ---- joystick ---------------------------------------------------- //
+        function stickVector(e) {
+            const rect = elStick.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            let dx = e.clientX - cx;
+            let dy = e.clientY - cy;
+            const max = rect.width / 2;
+            const len = Math.hypot(dx, dy);
+            if (len > max) { dx = dx / len * max; dy = dy / len * max; }
+            elKnob.style.transform = "translate(" + dx + "px," + dy + "px)";
+            joy.dx = dx / max;
+            joy.dy = dy / max;
+        }
+        function stickStart(e) {
+            e.preventDefault();
+            joy.active = true;
+            joy.pid = e.pointerId;
+            try { elStick.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+            stickVector(e);
+        }
+        function stickMove(e) {
+            if (!joy.active || e.pointerId !== joy.pid) return;
+            e.preventDefault();
+            stickVector(e);
+        }
+        function stickEnd(e) {
+            if (e.pointerId !== joy.pid && joy.pid !== null) return;
+            joy.active = false;
+            joy.pid = null;
+            joy.dx = 0;
+            joy.dy = 0;
+            elKnob.style.transform = "translate(0,0)";
+        }
+
         // Hide the on-screen controls while a card (join/error) is showing, so
         // they can't sit on top of buttons or links the player needs to tap.
         function setControls(visible) {
-            const dp = hud && hud.querySelector(".bh-dpad");
-            if (dp) dp.classList.toggle("bh-hidden", !visible);
+            if (elStick) elStick.classList.toggle("bh-hidden", !visible);
+            if (!visible) stickEnd({ pointerId: joy.pid });
         }
 
         function showJoin() {
@@ -398,23 +438,17 @@
             } else {
                 let ih = '<span class="lbl">Bag:</span>';
                 inv.forEach((it) => {
-                    let cls = "";
-                    if (it.isTarget) cls += " target";
-                    if (it.bugId === heldBugId) cls += " held";
-                    ih += '<button class="' + cls.trim() + '" data-bug="' + it.bugId + '">' + it.emoji + "</button>";
+                    ih += '<button class="' + (it.isTarget ? "target" : "") + '" data-bug="' +
+                        it.bugId + '">' + it.emoji + "</button>";
                 });
                 elInv.innerHTML = ih;
                 elInv.querySelectorAll("button").forEach((b) => {
                     b.addEventListener("click", () => {
-                        const id = b.dataset.bug;
-                        heldBugId = (heldBugId === id) ? null : id;
-                        SGSound.play("flip");
-                        updateHint();
-                        renderHud();
+                        const it = inv.find((x) => x.bugId === b.dataset.bug);
+                        if (it) showReleasePrompt(it);
                     });
                 });
             }
-            updateHint();
 
             // Win banner + ready button.
             if (state.phase === "won") {
@@ -440,15 +474,35 @@
             }
         }
 
-        function updateHint() {
-            if (heldBugId) {
-                const you = state ? state.you || {} : {};
-                const it = (you.inventory || []).find((x) => x.bugId === heldBugId);
-                elHint.textContent = "Holding " + (it ? it.emoji : "") + " — tap the field to let it go";
-                elHint.classList.remove("bh-hidden");
-            } else {
-                elHint.classList.add("bh-hidden");
-            }
+        function showReleasePrompt(item) {
+            promptOpen = true;
+            setControls(false);
+            elCenter.innerHTML =
+                '<div class="bh-card bh-prompt">' +
+                '  <div class="bh-who">' + item.emoji + "</div>" +
+                '  <h2>Release this bug?</h2>' +
+                '  <p>It hops back into the grass right where you\'re standing.</p>' +
+                '  <div class="bh-row">' +
+                '    <button class="bh-btn bh-rel">Release</button>' +
+                '    <button class="bh-btn alt bh-keep">Keep</button>' +
+                '  </div>' +
+                "</div>";
+            elCenter.querySelector(".bh-rel").addEventListener("click", () => {
+                send({ type: "release", bugId: item.bugId, x: me.x, y: me.y });
+                SGSound.play("drop");
+                host.vibrate(15);
+                closePrompt();
+            });
+            elCenter.querySelector(".bh-keep").addEventListener("click", () => {
+                SGSound.play("tap");
+                closePrompt();
+            });
+        }
+
+        function closePrompt() {
+            promptOpen = false;
+            clearCenter();
+            setControls(true);
         }
 
         // ---- input ------------------------------------------------------- //
@@ -467,26 +521,6 @@
             else if (k === "arrowdown" || k === "s") keys.down = false;
             else if (k === "arrowleft" || k === "a") keys.left = false;
             else if (k === "arrowright" || k === "d") keys.right = false;
-        }
-
-        function canvasToWorld(clientX, clientY) {
-            const rect = canvas.getBoundingClientRect();
-            const cx = clientX - rect.left;
-            const cy = clientY - rect.top;
-            return { x: (cx - W / 2) / scale + camX, y: (cy - H / 2) / scale + camY };
-        }
-
-        function onFieldTap(e) {
-            if (!heldBugId) return;            // taps only matter when holding a bug
-            const src = e.changedTouches ? e.changedTouches[0] : e;
-            const p = canvasToWorld(src.clientX, src.clientY);
-            p.x = Math.max(20, Math.min(world.w - 20, p.x));
-            p.y = Math.max(20, Math.min(world.h - 20, p.y));
-            send({ type: "release", bugId: heldBugId, x: p.x, y: p.y });
-            SGSound.play("drop");
-            host.vibrate(15);
-            heldBugId = null;
-            updateHint();
         }
 
         // ---- simulation + render loop ------------------------------------ //
@@ -510,35 +544,108 @@
         }
 
         function step(dt) {
-            if (state && state.phase === "playing" && connected && havePos) {
-                let vx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
-                let vy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
-                if (vx || vy) {
-                    const len = Math.hypot(vx, vy) || 1;
-                    me.x += (vx / len) * PLAYER_SPEED * dt;
-                    me.y += (vy / len) * PLAYER_SPEED * dt;
-                    me.x = Math.max(16, Math.min(world.w - 16, me.x));
-                    me.y = Math.max(16, Math.min(world.h - 16, me.y));
-                    const now = performance.now();
-                    if (now - lastMoveSent > MOVE_SEND_MS) {
-                        send({ type: "move", x: me.x, y: me.y });
-                        lastMoveSent = now;
-                    }
-                }
+            if (!(state && state.phase === "playing" && connected && havePos)) return;
+
+            // Joystick gives an analog vector; keyboard is a digital fallback.
+            let vx = joy.dx, vy = joy.dy;
+            if (!joy.active) {
+                vx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+                vy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+            }
+            let mag = Math.hypot(vx, vy);
+            if (mag < 0.08) return;            // small dead zone
+            if (mag > 1) { vx /= mag; vy /= mag; mag = 1; }
+
+            me.x += vx * PLAYER_SPEED * dt;
+            me.y += vy * PLAYER_SPEED * dt;
+            me.x = Math.max(16, Math.min(world.w - 16, me.x));
+            me.y = Math.max(HORIZON + 14, Math.min(world.h - 16, me.y));
+            const now = performance.now();
+            if (now - lastMoveSent > MOVE_SEND_MS) {
+                send({ type: "move", x: me.x, y: me.y });
+                lastMoveSent = now;
             }
         }
 
         function wx(x) { return (x - camX) * scale + W / 2; }
         function wy(y) { return (y - camY) * scale + H / 2; }
 
+        function makeMountains() {
+            function layer(min, max, step) {
+                const pts = [];
+                for (let x = -160; x <= 1160; x += step) {
+                    pts.push([x, HORIZON - (min + Math.random() * (max - min))]);
+                }
+                return pts;
+            }
+            return [
+                { pts: layer(34, 78, 150), color: "#6b7da0" },   // far, hazy blue
+                { pts: layer(46, 104, 120), color: "#4a6a52" },  // mid, green
+                { pts: layer(58, 130, 95), color: "#35513a" }    // near, dark green
+            ];
+        }
+
+        function drawShadow(x, y, rx, ry) {
+            ctx.save();
+            ctx.fillStyle = "rgba(0,0,0,0.22)";
+            ctx.beginPath();
+            ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawSky(skyBottom) {
+            const sb = Math.min(skyBottom, H);
+            if (sb <= 0) return;
+            const sky = ctx.createLinearGradient(0, 0, 0, sb);
+            sky.addColorStop(0, "#7ec6f4");
+            sky.addColorStop(0.7, "#bfe4f0");
+            sky.addColorStop(1, "#dff1e0");
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, W, sb);
+
+            // Sun
+            ctx.save();
+            ctx.beginPath(); ctx.rect(0, 0, W, sb); ctx.clip();
+            ctx.fillStyle = "rgba(255,245,200,0.95)";
+            ctx.beginPath(); ctx.arc(W * 0.8, sb * 0.32, Math.max(20, sb * 0.12), 0, Math.PI * 2); ctx.fill();
+
+            // Clouds drift slowly across the sky.
+            const t = lastTs / 1000;
+            ctx.fillStyle = "rgba(255,255,255,0.9)";
+            for (const c of clouds) {
+                const cx = ((c.x * (W + 200) + t * c.sp) % (W + 200)) - 100;
+                const cy = c.y * sb;
+                const r = 16 * c.s;
+                ctx.beginPath();
+                ctx.ellipse(cx, cy, r * 1.6, r, 0, 0, Math.PI * 2);
+                ctx.ellipse(cx + r * 1.3, cy + r * 0.2, r * 1.1, r * 0.8, 0, 0, Math.PI * 2);
+                ctx.ellipse(cx - r * 1.2, cy + r * 0.25, r, r * 0.7, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+
+            // Mountain ranges sit on the horizon line.
+            for (const L of mountains) {
+                ctx.fillStyle = L.color;
+                ctx.beginPath();
+                ctx.moveTo(wx(L.pts[0][0]), sb + 4);
+                for (const p of L.pts) ctx.lineTo(wx(p[0]), wy(p[1]));
+                ctx.lineTo(wx(L.pts[L.pts.length - 1][0]), sb + 4);
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+
         function drawSpot(s, t) {
             const x = wx(s.x), y = wy(s.y);
             const wob = s.rustle > 0 ? Math.sin(t * 30) * 3 * s.rustle : 0;
+            const fs = Math.max(28, 36 * scale);
+            drawShadow(x, y + fs * 0.42, fs * 0.5, fs * 0.18);
             ctx.save();
             ctx.translate(x + wob, y);
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            const fs = Math.max(28, 36 * scale);
 
             if (s.type === "log") {
                 // Drawn (not emoji) so it always shows — the wood emoji is new and
@@ -577,6 +684,7 @@
             const x = wx(b.x), y = wy(b.y);
             const bob = Math.sin(t * 8 + b.x) * 2;
             const r = Math.max(18, 22 * scale);
+            drawShadow(x, y + r * 0.7, r * 0.7, r * 0.28);
             ctx.save();
             ctx.translate(x, y + bob);
             // A soft pale halo keeps bugs readable on the dark grass, and means
@@ -605,6 +713,7 @@
         function drawPlayer(p) {
             const x = wx(p.x), y = wy(p.y);
             const mine = p.id === myId;
+            drawShadow(x, y + 16, 16, 6);
             ctx.save();
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
@@ -620,39 +729,75 @@
         function draw(t) {
             updateCamera();
 
-            // Everything outside the field.
-            ctx.fillStyle = "#0e1f14";
+            // Distant grass fills any area beside/below the playable field.
+            ctx.fillStyle = "#173a23";
             ctx.fillRect(0, 0, W, H);
 
-            // The grassy field (only the camera's window of it shows).
-            const gx = wx(0), gy = wy(0), gw = world.w * scale, gh = world.h * scale;
-            const g = ctx.createLinearGradient(0, gy, 0, gy + gh);
-            g.addColorStop(0, "#23502f");
-            g.addColorStop(1, "#173a22");
-            ctx.fillStyle = g;
-            ctx.fillRect(gx, gy, gw, gh);
+            // Sky + mountains above the horizon line.
+            const horizonY = wy(HORIZON);
+            drawSky(horizonY);
 
-            // Faint grid so movement is readable as the camera pans.
-            ctx.strokeStyle = "#ffffff0f";
-            ctx.lineWidth = 1;
+            // The grassy playable field (world y from HORIZON to the bottom).
+            const fx = wx(0), fyTop = wy(HORIZON);
+            const fw = world.w * scale, fh = (world.h - HORIZON) * scale;
+            const g = ctx.createLinearGradient(0, fyTop, 0, fyTop + fh);
+            g.addColorStop(0, "#2e6038");
+            g.addColorStop(1, "#1d4427");
+            ctx.fillStyle = g;
+            ctx.fillRect(fx, fyTop, fw, fh);
+
+            // Grass tufts give the ground texture (clipped to the field).
+            ctx.save();
             ctx.beginPath();
-            for (let x = 0; x <= world.w; x += 100) { ctx.moveTo(wx(x), gy); ctx.lineTo(wx(x), gy + gh); }
-            for (let y = 0; y <= world.h; y += 100) { ctx.moveTo(gx, wy(y)); ctx.lineTo(gx + gw, wy(y)); }
+            ctx.rect(fx, fyTop, fw, fh);
+            ctx.clip();
+            ctx.strokeStyle = "rgba(120,200,130,0.35)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (const tf of tufts) {
+                const gxp = wx(tf.x), gyp = wy(tf.y), bl = 5 * tf.s * scale;
+                ctx.moveTo(gxp, gyp); ctx.lineTo(gxp - bl * 0.4, gyp - bl);
+                ctx.moveTo(gxp, gyp); ctx.lineTo(gxp, gyp - bl * 1.2);
+                ctx.moveTo(gxp, gyp); ctx.lineTo(gxp + bl * 0.4, gyp - bl);
+            }
+            ctx.stroke();
+            ctx.restore();
+
+            // A soft edge where grass meets the horizon.
+            const hz = ctx.createLinearGradient(0, fyTop, 0, fyTop + 26);
+            hz.addColorStop(0, "rgba(20,40,25,0.55)");
+            hz.addColorStop(1, "rgba(20,40,25,0)");
+            ctx.fillStyle = hz;
+            ctx.fillRect(fx, fyTop, fw, 26);
+
+            // Field border (sides + bottom; top blends into the horizon).
+            ctx.strokeStyle = "#ffffff22";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(fx, fyTop); ctx.lineTo(fx, fyTop + fh);
+            ctx.lineTo(fx + fw, fyTop + fh); ctx.lineTo(fx + fw, fyTop);
             ctx.stroke();
 
-            // Field border.
-            ctx.strokeStyle = "#ffffff24";
-            ctx.lineWidth = 3;
-            ctx.strokeRect(gx, gy, gw, gh);
-
-            if (!state) return;
-            for (const s of state.spots || []) drawSpot(s, t);
-            for (const b of state.bugs || []) drawBug(b, t);
-            for (const p of state.players || []) {
-                // Draw my predicted position instead of the server's older copy.
-                if (p.id === myId && havePos) drawPlayer({ ...p, x: me.x, y: me.y });
-                else drawPlayer(p);
+            if (state) {
+                // Sort so things lower on screen draw in front (depth ordering).
+                const ents = [];
+                for (const s of state.spots || []) ents.push({ y: s.y, fn: () => drawSpot(s, t) });
+                for (const b of state.bugs || []) ents.push({ y: b.y, fn: () => drawBug(b, t) });
+                for (const p of state.players || []) {
+                    const pp = (p.id === myId && havePos) ? { ...p, x: me.x, y: me.y } : p;
+                    ents.push({ y: pp.y, fn: () => drawPlayer(pp) });
+                }
+                ents.sort((a, b) => a.y - b.y);
+                for (const e of ents) e.fn();
             }
+
+            // Gentle vignette for depth.
+            const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35,
+                W / 2, H / 2, Math.max(W, H) * 0.72);
+            vg.addColorStop(0, "rgba(0,0,0,0)");
+            vg.addColorStop(1, "rgba(0,0,0,0.32)");
+            ctx.fillStyle = vg;
+            ctx.fillRect(0, 0, W, H);
         }
 
         function loop(ts) {
@@ -672,7 +817,6 @@
                 window.addEventListener("resize", resize);
                 window.addEventListener("keydown", onKeyDown);
                 window.addEventListener("keyup", onKeyUp);
-                canvas.addEventListener("pointerdown", onFieldTap);
                 // Launched standalone with a profile? Drop straight into the game.
                 // Otherwise show the join panel (e.g. running inside the app shell).
                 if (urlName) connect(defaultWsUrl());
@@ -681,7 +825,6 @@
             },
             restart() {
                 // Standard "play again" just reopens the join panel.
-                heldBugId = null;
                 havePos = false;
                 if (ws) { try { ws.close(); } catch (e) { /* ignore */ } ws = null; }
                 showJoin();
@@ -691,7 +834,6 @@
                 window.removeEventListener("resize", resize);
                 window.removeEventListener("keydown", onKeyDown);
                 window.removeEventListener("keyup", onKeyUp);
-                canvas.removeEventListener("pointerdown", onFieldTap);
                 if (ws) { try { ws.close(); } catch (e) { /* ignore */ } ws = null; }
                 if (hud && hud.parentElement) hud.parentElement.removeChild(hud);
                 const st = document.getElementById(STYLE_ID);
