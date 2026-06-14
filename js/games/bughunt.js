@@ -8,6 +8,7 @@
     const MOVE_SEND_MS = 60;           // how often we push our position
     const STYLE_ID = "bughunt-style";
     const VIEW_W = 640, VIEW_H = 640;  // world units kept visible (camera zoom)
+    const HORIZON = 120;               // world y above this is sky/mountains (keep in sync with server)
 
     // Hard-coded server location. The server's port is 8765 (see server.py).
     const SERVER_HOST = "192.168.0.12";
@@ -201,6 +202,16 @@
 
         function clearCenter() { elCenter.innerHTML = ""; }
 
+        function showConnecting() {
+            setControls(false);
+            elCenter.innerHTML =
+                '<div class="bh-card">' +
+                '  <div class="bh-who">' + myAvatar + "</div>" +
+                '  <h2>Joining as ' + myName + "…</h2>" +
+                '  <p>Connecting to the game.</p>' +
+                "</div>";
+        }
+
         function showError(title, htmlBody) {
             setControls(false);
             elStatus.textContent = "offline";
@@ -217,7 +228,7 @@
         let connectTimer = null;
 
         function connect(url) {
-            clearCenter();
+            showConnecting();
             elStatus.textContent = "connecting…";
 
             // An https page can't open an insecure ws:// (mixed content). With the
@@ -662,7 +673,10 @@
                 window.addEventListener("keydown", onKeyDown);
                 window.addEventListener("keyup", onKeyUp);
                 canvas.addEventListener("pointerdown", onFieldTap);
-                showJoin();
+                // Launched standalone with a profile? Drop straight into the game.
+                // Otherwise show the join panel (e.g. running inside the app shell).
+                if (urlName) connect(defaultWsUrl());
+                else showJoin();
                 rafId = requestAnimationFrame(loop);
             },
             restart() {
