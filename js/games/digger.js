@@ -6,6 +6,8 @@
    Controls
      - Swipe up/down/left/right to dig & move that way. Hold and drag to
        keep digging in a direction.
+     - You can only climb UP on ladders. Tap the 🪜 button (or press Space)
+       to place one; on a ladder it extends straight up. Buy more at the shop.
      - WASD or arrow keys move & dig.
      - At the surface, tap the shop (or press the SHOP button) to upgrade.
    ========================================================= */
@@ -31,6 +33,7 @@
         DENSE: 3,   // hard 3
         OBSID: 4,   // hard 4
         HAZARD: 5,  // gas pocket — hurts when dug
+        LADDER: 6,  // placed by the player; the only way to climb up
         BEDROCK: 9  // walls at the edges, never breakable
     };
 
@@ -66,13 +69,15 @@
 
         // World: sparse map of "x,y" -> { type, hard, loot }
         const world = new Map();
-        let player, stats, carry, banked, depthBest, mode, shopRects, msg, msgT;
+        let player, stats, carry, banked, depthBest, mode, shopRects, msg, msgT, ladders;
         let mining = null;        // tile being broken: { x, y, dx, dy, t, required }
         let heldDir = null;       // direction held (swipe-drag / key) for chained digging
         let dead = false;         // true after a game over
         let lastTs = 0;           // last frame timestamp (ms) for real-time mining
         let flash = 0;            // damage flash timer
         let particles = [];
+        const climbMsg = "Place a ladder to climb ↑";
+        const noLadderMsg = "No ladders! Buy more at the shop";
 
         // ----- Upgradeable stats -----
         function baseStats() {
@@ -129,6 +134,13 @@
                 max: 4, lvl: () => stats.hpLvl,
                 cost: () => [50, 120, 250, 450][stats.hpLvl],
                 buy: () => { stats.hpLvl++; }
+            },
+            {
+                key: "ladder", name: "Ladders", emoji: "\u{1FA9C}",
+                desc: () => "+5 ladders (you have " + ladders + ")",
+                consumable: true,
+                cost: () => 20,
+                buy: () => { ladders += 5; }
             }
         ];
 
@@ -236,6 +248,7 @@
             heldDir = null;
             dead = false;
             lastTs = 0;
+            ladders = kids ? 10 : 5;
             host.setScore(0);
         }
 
@@ -277,13 +290,29 @@
             if (nx < 0 || nx >= COLS) return;
             if (ny < SURFACE_Y) return;             // can't go up into the sky
 
-            if (ny <= SURFACE_Y) {                  // surface row: walk
+            if (ny <= SURFACE_Y) {                  // step out onto the surface
                 player.x = nx; player.y = ny;
                 onEnter(nx, ny);
                 return;
             }
+
             const t = tileAt(nx, ny);
-            if (t.type === T.EMPTY) {               // walk into dug-out space
+
+            // Climbing up underground is only possible on a ladder.
+            if (dy < 0) {
+                if (t.type === T.LADDER) {
+                    player.x = nx; player.y = ny;
+                    SGSound.play("flip");
+                    onEnter(nx, ny);
+                } else {
+                    if (msg !== climbMsg || msgT <= 0) SGSound.play("wrong");
+                    setMsg(climbMsg, 90);
+                }
+                return;
+            }
+
+            // Down / sideways: walk through dug space and ladders freely.
+            if (t.type === T.EMPTY || t.type === T.LADDER) {
                 player.x = nx; player.y = ny;
                 onEnter(nx, ny);
                 return;
@@ -302,6 +331,32 @@
             }
             // Start chipping away; update() finishes it after `required` ms.
             mining = { x: nx, y: ny, dx: dx, dy: dy, t: 0, required: digTimeFor(t.type) };
+        }
+
+        // Place a ladder to build a climb path. It drops into the first empty
+        // tile above the player, skipping over any ladders already stacked
+        // there — so on a ladder it extends straight up. Errors if there's no
+        // open slot (solid ceiling or already at the surface).
+        function placeLadder() {
+            if (mode !== "play" || dead) return;
+            if (ladders <= 0) {
+                if (msg !== noLadderMsg || msgT <= 0) SGSound.play("wrong");
+                setMsg(noLadderMsg, 110); host.vibrate(20);
+                return;
+            }
+            const tx = player.x;
+            let ty = player.y - 1;
+            while (ty > SURFACE_Y && tileAt(tx, ty).type === T.LADDER) ty--;
+            if (ty <= SURFACE_Y || tileAt(tx, ty).type !== T.EMPTY) {
+                SGSound.play("wrong"); host.vibrate([20, 30, 20]);
+                setMsg("No room for a ladder", 100);
+                return;
+            }
+            world.set(key(tx, ty), { type: T.LADDER, hard: 0, loot: 0 });
+            ladders--;
+            SGSound.play("flip"); host.vibrate(12);
+            spawnParticles(cx(tx), cyRow(ty), "#caa15a", 6);
+            setMsg("Ladder placed \u{1FA9C} (×" + ladders + ")", 70);
         }
 
         function breakTile(x, y, t) {
@@ -396,18 +451,20 @@
         function closeShop() { mode = "play"; SGSound.play("tap"); }
 
         function buy(item) {
-            if (item.lvl() >= item.max) { SGSound.play("wrong"); return; }
+            if (!item.consumable && item.lvl() >= item.max) { SGSound.play("wrong"); return; }
             const cost = item.cost();
             if (banked < cost) { setMsg("Not enough coins", 80); SGSound.play("wrong"); return; }
             banked -= cost;
             item.buy();
-            // Refill to new maxima so upgrades feel immediate.
-            stats.hp = maxHP();
-            stats.stam = maxStam();
+            if (!item.consumable) {
+                // Refill to new maxima so upgrades feel immediate.
+                stats.hp = maxHP();
+                stats.stam = maxStam();
+            }
             host.setScore(banked);
             SGSound.play("match");
             host.vibrate(20);
-            setMsg(item.name + " upgraded!", 90);
+            setMsg(item.name + (item.consumable ? " bought!" : " upgraded!"), 90);
         }
 
         // ---------- Coordinate helpers ----------
@@ -422,6 +479,7 @@
                 case T.DENSE: return "#4a5560";
                 case T.OBSID: return "#2b2438";
                 case T.HAZARD: return "#3a7d4a";
+                case T.LADDER: return "#caa15a";
                 case T.BEDROCK: return "#15151f";
                 default: return "#1c1320";
             }
@@ -500,6 +558,8 @@
                     if (t.type === T.EMPTY) {
                         ctx.fillStyle = shade("#1c1320", light);
                         ctx.fillRect(x, y, cell + 1, cell + 1);
+                    } else if (t.type === T.LADDER) {
+                        drawLadderTile(x, y, light);
                     } else {
                         ctx.fillStyle = shade(tileColor(t.type), light);
                         ctx.fillRect(x, y, cell + 1, cell + 1);
@@ -563,6 +623,7 @@
             ctx.fillRect(0, 0, W, topPad);
 
             drawHUD();
+            drawLadderButton();
 
             if (flash > 0) {
                 ctx.fillStyle = "rgba(255,60,60," + (flash / 14) * 0.35 + ")";
@@ -588,6 +649,21 @@
             ctx.fill();
             ctx.fillStyle = "rgba(255,255,255,0.7)";
             ctx.fillRect(cxp - r * 0.2, cyp - r * 0.5, r * 0.3, r * 0.5);
+        }
+
+        function drawLadderTile(x, y, light) {
+            // Dug-out background, then a wooden ladder over it.
+            ctx.fillStyle = shade("#1c1320", light);
+            ctx.fillRect(x, y, cell + 1, cell + 1);
+            ctx.fillStyle = shade("#caa15a", Math.max(0.5, light));
+            const railW = Math.max(2, cell * 0.08);
+            const lx = x + cell * 0.26, rx = x + cell * 0.64;
+            ctx.fillRect(lx, y, railW, cell + 1);
+            ctx.fillRect(rx, y, railW, cell + 1);
+            for (let i = 0; i < 3; i++) {
+                const ry = y + cell * (0.18 + i * 0.32);
+                ctx.fillRect(lx, ry, (rx - lx) + railW, railW);
+            }
         }
 
         function drawMiner(px, py) {
@@ -698,6 +774,23 @@
             }
         }
         let hudShopRect = null;
+        let ladderBtnRect = null;
+
+        function drawLadderButton() {
+            const W = canvas.clientWidth, H = canvas.clientHeight;
+            const s = 58, m = 16;
+            const bx = W - s - m, by = H - s - m;
+            ctx.fillStyle = ladders > 0 ? "rgba(36,38,64,0.92)" : "rgba(64,32,42,0.92)";
+            roundRect(bx, by, s, s, 14);
+            ctx.textAlign = "center";
+            ctx.font = Math.floor(s * 0.42) + "px system-ui, sans-serif";
+            ctx.fillStyle = ladders > 0 ? "#f2f3ff" : "#8a6a76";
+            ctx.fillText("\u{1FA9C}", bx + s / 2, by + s * 0.47);
+            ctx.font = "700 13px system-ui, sans-serif";
+            ctx.fillStyle = ladders > 0 ? "#ffd35a" : "#8a6a76";
+            ctx.fillText("×" + ladders, bx + s / 2, by + s - 8);
+            ladderBtnRect = { x: bx, y: by, w: s, h: s };
+        }
 
         function drawShop() {
             const W = canvas.clientWidth, H = canvas.clientHeight;
@@ -717,12 +810,13 @@
             ctx.fillText("\u{1F4B0} " + banked + " coins", W / 2, py + 30);
 
             py += 52;
-            const rowH = 60, gap = 8;
+            const rowH = 56, gap = 7;
             shopRects = [];
 
             for (const item of SHOP) {
-                const lvl = item.lvl();
-                const maxed = lvl >= item.max;
+                const consumable = !!item.consumable;
+                const lvl = consumable ? 0 : item.lvl();
+                const maxed = !consumable && lvl >= item.max;
                 const cost = maxed ? 0 : item.cost();
                 const afford = banked >= cost;
 
@@ -741,10 +835,12 @@
                 ctx.fillStyle = "#a8a8c8";
                 ctx.font = "500 12px system-ui, sans-serif";
                 ctx.fillText(item.desc(), px + 52, py + 40);
-                // pips
-                for (let i = 0; i < item.max; i++) {
-                    ctx.fillStyle = i < lvl ? "#5fd0ff" : "#3a3550";
-                    ctx.fillRect(px + 52 + i * 12, py + 48, 8, 5);
+                // level pips (upgrades only)
+                if (!consumable) {
+                    for (let i = 0; i < item.max; i++) {
+                        ctx.fillStyle = i < lvl ? "#5fd0ff" : "#3a3550";
+                        ctx.fillRect(px + 52 + i * 12, py + 48, 8, 5);
+                    }
                 }
 
                 // buy button
@@ -815,6 +911,7 @@
                 }
                 return true;   // swallow taps anywhere on the shop overlay
             }
+            if (hit(ladderBtnRect, mx, my)) { placeLadder(); return true; }
             if (hit(hudShopRect, mx, my)) { openShop(); return true; }
             if (hit(shopBtnRect, mx, my) && player.y <= SURFACE_Y) { openShop(); return true; }
             if (my < topPad) return true;   // ignore the HUD band
@@ -867,6 +964,7 @@
                 W: [0, -1], S: [0, 1], A: [-1, 0], D: [1, 0]
             };
             if (e.key === "b" || e.key === "B") { e.preventDefault(); openShop(); return; }
+            if (e.key === " " || e.key === "e" || e.key === "E") { e.preventDefault(); placeLadder(); return; }
             const m = map[e.key];
             if (m) { e.preventDefault(); requestDig(m[0], m[1]); }
         }
