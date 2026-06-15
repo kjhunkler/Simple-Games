@@ -4,18 +4,14 @@
    from the shopkeeper. Better gear lets you dig deeper for richer loot.
 
    Controls
-     - Swipe up/down/left/right to dig & move that way. Hold and drag to
-       keep digging in a direction.
-     - Swipe up to climb a ladder or mine the block directly overhead. With
-       open space above and solid footing, you hop: if there's a block one
-       step up in the way you're facing, you jump up-and-over onto it;
-       otherwise you hop in place and reach to mine the block two rows up —
-       that chip is held for ~1s, so repeated hops finish it. Gravity pulls
-       you down off ledges, so for taller climbs place ladders: tap the 🪜
-       button (or press Space). Buy more at the shop.
+     - Swipe in any of the 8 directions to dig & move that way. Swipe (or
+       hold) diagonally up — e.g. up-and-right — to move or mine diagonally
+       upward, climbing a dug staircase. Hold and drag to keep digging.
+     - Gravity pulls you down off ledges, so for taller straight-up climbs
+       place ladders: tap the 🪜 button (or press Space). Buy more at the shop.
      - Place a box with the 📦 button (or press Q). Boxes land in front of
        you, or beneath you if blocked. Mine them to get them back.
-     - WASD or arrow keys move & dig.
+     - WASD or arrow keys move & dig; hold up + a side key for a diagonal.
      - The shop opens automatically when you climb back to the surface; tap
        the shop (or press the SHOP button) to open it any time at the top.
    ========================================================= */
@@ -86,16 +82,12 @@
         let player, stats, carry, banked, depthBest, mode, shopRects, msg, msgT, ladders, boxes;
         let mining = null;        // tile being broken: { x, y, dx, dy, t, required }
         let heldDir = null;       // direction held (swipe-drag / key) for chained digging
+        const heldKeys = new Set(); // movement keys currently down, for 8-way (diagonal) input
         let prevY = 0;            // player.y on the previous onEnter, to detect surfacing
-        let jumpAnim = 0;         // seconds left of the visual hop animation (0 = grounded)
-        let jumpFrom = null;      // grid cell {x,y} the current hop launched from, for the arc
-        const JUMP_DUR = 0.42;    // length of the up-and-down hop, in seconds
-        const MINE_RETAIN = 1000; // ms a reach-mine (block two above) keeps its progress while idle
         let dead = false;         // true after a game over
         let lastTs = 0;           // last frame timestamp (ms) for real-time mining
         let flash = 0;            // damage flash timer
         let particles = [];
-        const climbMsg = "Place a ladder to climb ↑";
         const noLadderMsg = "No ladders! Buy more at the shop";
 
         // ----- Surface scene animation state -----
@@ -280,9 +272,8 @@
             camY = 0;
             mining = null;
             heldDir = null;
+            heldKeys.clear();
             prevY = SURFACE_Y;
-            jumpAnim = 0;
-            jumpFrom = null;
             dead = false;
             lastTs = 0;
             ladders = kids ? 10 : 5;
@@ -331,13 +322,13 @@
             return Math.max(120, ms);
         }
 
-        // A directional input (one swipe step or key press). Walking is
-        // instant; a solid tile starts a timed mine that finishes in update().
+        // A directional input (a swipe step or held keys). Diagonals are allowed
+        // (e.g. up+right). Walking is instant; a solid tile starts a timed mine.
         function requestDig(dx, dy) {
             if (mode !== "play" || dead) return;
+            if (dx === 0 && dy === 0) return;
             if (dx !== 0) facing = dx;
             heldDir = { dx: dx, dy: dy };
-            if (dy < 0) { stepUp(); return; }   // up: climb / hop / reach-mine
             if (!mining || mining.dx !== dx || mining.dy !== dy) beginStep(dx, dy);
         }
 
@@ -356,95 +347,21 @@
             const t = tileAt(nx, ny);
 
             if (t.type === T.EMPTY || t.type === T.LADDER) {
-                // Down / sideways: walk through dug space and ladders freely,
-                // then let gravity pull us down if we stepped into open air.
+                // Walk (any direction, including diagonally up) through dug space
+                // and ladders; gravity then pulls us down if we stepped into air.
                 player.x = nx; player.y = ny;
                 onEnter(nx, ny);
                 settle();
                 return;
             }
 
-            // Solid tile in a down/side direction → start chipping it.
-            tryStartMine(nx, ny, dx, dy, false);
-        }
-
-        // Upward input: climb a ladder, step out onto the surface, mine a solid
-        // block directly overhead, jump up-and-over onto an adjacent ledge in the
-        // facing direction, or hop in place and reach up to mine the block 2 rows up.
-        function stepUp() {
-            const nx = player.x, ny = player.y - 1;
-            if (ny < SURFACE_Y) return;             // already at the surface
-
-            if (ny <= SURFACE_Y) {                  // climb out onto the surface
-                player.x = nx; player.y = ny;
-                onEnter(nx, ny);
-                return;
-            }
-
-            const t = tileAt(nx, ny);
-
-            if (t.type === T.LADDER) {              // climb the ladder up
-                player.x = nx; player.y = ny;
-                SGSound.play("flip");
-                onEnter(nx, ny);
-                return;
-            }
-
-            if (t.type === T.EMPTY) {
-                // Open space overhead. Need solid footing to push off.
-                if (!hasFooting()) {
-                    if (msg !== climbMsg || msgT <= 0) SGSound.play("wrong");
-                    setMsg(climbMsg, 90);
-                    return;
-                }
-                // Ledge-jump: hop up-and-over onto an adjacent block one level
-                // up in the facing direction, when there's room to land on it.
-                const lx = player.x + facing, ly = player.y - 1;
-                if (lx >= 0 && lx < COLS && ly > SURFACE_Y &&
-                    tileAt(lx, ly).type === T.EMPTY &&            // space to land in
-                    tileAt(lx, ly + 1).type !== T.EMPTY) {       // solid ledge under it
-                    startHop(player.x, player.y);
-                    player.x = lx; player.y = ly;
-                    onEnter(lx, ly);
-                    settle();
-                    return;
-                }
-                // Otherwise hop in place and reach up to chip the block 2 rows up.
-                startHop(player.x, player.y);
-                reachMine();
-                return;
-            }
-
-            // Solid block directly overhead → mine it normally (no hop). Keep
-            // any in-progress chip on this same tile so it isn't reset.
-            if (mining && mining.x === nx && mining.y === ny) return;
-            tryStartMine(nx, ny, 0, -1, false);
-        }
-
-        // Kick off (or refresh) the visual hop arc from a launch cell.
-        function startHop(fx, fy) {
-            if (jumpAnim <= 0) { SGSound.play("jump"); host.vibrate(8); }
-            jumpFrom = { x: fx, y: fy };
-            jumpAnim = JUMP_DUR;
-        }
-
-        // Chip the block two rows above while hopping. Re-triggering on the same
-        // tile preserves its progress (the retention is handled in update()).
-        function reachMine() {
-            const tx = player.x, ty = player.y - 2;
-            if (ty < SURFACE_Y) return;             // nothing that high to mine
-            const t = tileAt(tx, ty);
-            if (t.type === T.EMPTY || t.type === T.LADDER) return;   // nothing solid
-            if (mining && mining.reach && mining.x === tx && mining.y === ty) {
-                mining.idle = 0;                    // keep chipping the same tile
-                return;
-            }
-            tryStartMine(tx, ty, 0, -1, true);
+            // Solid tile → start chipping it (mines diagonally up too).
+            tryStartMine(nx, ny, dx, dy);
         }
 
         // Shared guard + mine starter for solid tiles. Refuses (with feedback)
         // on bedrock, no stamina, or rock harder than the current pickaxe.
-        function tryStartMine(nx, ny, dx, dy, reach) {
+        function tryStartMine(nx, ny, dx, dy) {
             const t = tileAt(nx, ny);
             if (t.type === T.BEDROCK) { SGSound.play("wrong"); return; }
             if (stats.stam <= 0) {
@@ -459,12 +376,7 @@
                 return;
             }
             // Start chipping away; update() finishes it after `required` ms.
-            mining = { x: nx, y: ny, dx: dx, dy: dy, t: 0, required: digTimeFor(t.type), reach: !!reach, idle: 0 };
-        }
-
-        // Solid ground (or a ladder) directly below to push off when jumping.
-        function hasFooting() {
-            return tileAt(player.x, player.y + 1).type !== T.EMPTY;
+            mining = { x: nx, y: ny, dx: dx, dy: dy, t: 0, required: digTimeFor(t.type) };
         }
 
         // Gravity: if the miner is in open air (not on a ladder, nothing solid
@@ -553,9 +465,11 @@
         function breakTile(x, y, t) {
             stats.stam--;
             const cxp = cx(x), cyp = cyRow(y);
-            // Step into the tile we broke, unless we mined straight overhead —
-            // you don't rise into a dug ceiling; you jump up into it instead.
-            const movesInto = y >= player.y;
+            // Step into the tile we broke, except when it was straight overhead —
+            // you don't rise into a dug ceiling. Diagonally-up counts as a step,
+            // so you can climb a staircase; gravity (settle) pulls you back if
+            // there's no footing under the new tile.
+            const movesInto = !(x === player.x && y < player.y);
 
             // Box: recover to inventory instead of discarding
             if (t.type === T.BOX) {
@@ -706,14 +620,7 @@
                 const t = tileAt(mining.x, mining.y);
                 if (t.type === T.EMPTY || stats.stam <= 0) {
                     mining = null;                  // tile gone or no stamina left
-                } else if (mining.reach && jumpAnim <= 0) {
-                    // Reach-mine (the block two above): only chips mid-hop. Once
-                    // the miner lands, hold the progress for MINE_RETAIN before
-                    // forgetting it, so repeated jumps can finish the block.
-                    mining.idle += dt * 1000;
-                    if (mining.idle >= MINE_RETAIN) mining = null;
                 } else {
-                    if (mining.reach) mining.idle = 0;   // reaching up: keep chipping
                     mining.t += dt * 1000;
                     if (Math.random() < dt * 14) {
                         spawnParticles(cx(mining.x), cyRow(mining.y), tileColor(t.type), 2);
@@ -722,10 +629,7 @@
                         breakTile(mining.x, mining.y, t);
                         mining = null;
                         // Keep digging while a direction is held down.
-                        if (!dead && heldDir) {
-                            if (heldDir.dy < 0) stepUp();
-                            else beginStep(heldDir.dx, heldDir.dy);
-                        }
+                        if (!dead && heldDir) beginStep(heldDir.dx, heldDir.dy);
                     }
                 }
             }
@@ -741,10 +645,6 @@
 
             if (flash > 0) flash--;
             if (msgT > 0) msgT--;
-            if (jumpAnim > 0) {
-                jumpAnim = Math.max(0, jumpAnim - dt);
-                if (jumpAnim === 0) jumpFrom = null;   // hop finished, drop the arc origin
-            }
 
             for (let i = particles.length - 1; i >= 0; i--) {
                 const p = particles[i];
@@ -1135,18 +1035,6 @@
 
         function drawMiner(px, py) {
             const r = cell * 0.34;
-            // Visual hop: arc from the launch cell to the current cell, rising
-            // then falling over JUMP_DUR. A ledge-jump moves across cells, so we
-            // lerp the horizontal/vertical origin too; an in-place hop just lifts.
-            if (jumpAnim > 0) {
-                const phase = 1 - jumpAnim / JUMP_DUR;     // 0 → 1 across the hop
-                if (jumpFrom) {
-                    const fx = cx(jumpFrom.x), fy = cyRow(jumpFrom.y);
-                    px += (fx - px) * (1 - phase);
-                    py += (fy - py) * (1 - phase);
-                }
-                py -= Math.sin(phase * Math.PI) * cell * 0.95;
-            }
             // body
             ctx.fillStyle = "#3b7bd6";
             roundRect(px - r, py - r * 0.2, r * 2, r * 1.5, r * 0.4);
@@ -1668,14 +1556,41 @@
             const dx = p.mx - drag.x, dy = p.my - drag.y;
             const thresh = Math.max(12, cell * 0.4);
             if (Math.abs(dx) < thresh && Math.abs(dy) < thresh) return;
-            // Dig/move in the dominant swipe direction (4-dir).
-            if (Math.abs(dx) >= Math.abs(dy)) requestDig(Math.sign(dx), 0);
-            else requestDig(0, Math.sign(dy));
+            // 8-direction: include each axis that clears the threshold, and also
+            // the lesser axis if the swipe is roughly diagonal, so up-and-side
+            // swipes move/mine diagonally upward.
+            let sx = Math.abs(dx) >= thresh ? Math.sign(dx) : 0;
+            let sy = Math.abs(dy) >= thresh ? Math.sign(dy) : 0;
+            if (sx !== 0 && sy === 0 && Math.abs(dy) >= Math.abs(dx) * 0.5) sy = Math.sign(dy);
+            if (sy !== 0 && sx === 0 && Math.abs(dx) >= Math.abs(dy) * 0.5) sx = Math.sign(dx);
+            requestDig(sx, sy);
             // Re-anchor so a held drag keeps digging tile by tile.
             drag = { x: p.mx, y: p.my };
         }
 
         function onPointerUp() { drag = null; heldDir = null; }
+
+        // Map a movement key to its axis vector, or null if it isn't one.
+        function keyVec(key) {
+            switch (key) {
+                case "ArrowUp": case "w": case "W": return [0, -1];
+                case "ArrowDown": case "s": case "S": return [0, 1];
+                case "ArrowLeft": case "a": case "A": return [-1, 0];
+                case "ArrowRight": case "d": case "D": return [1, 0];
+                default: return null;
+            }
+        }
+
+        // Combine all held movement keys into one (possibly diagonal) direction.
+        function heldVec() {
+            let dx = 0, dy = 0;
+            for (const k of heldKeys) {
+                const v = keyVec(k);
+                if (!v) continue;
+                dx += v[0]; dy += v[1];
+            }
+            return { dx: Math.sign(dx), dy: Math.sign(dy) };
+        }
 
         function onKey(e) {
             if (dead) return;
@@ -1685,19 +1600,21 @@
                 if (idx >= 1 && idx <= SHOP.length) { e.preventDefault(); buy(SHOP[idx - 1]); }
                 return;
             }
-            const map = {
-                ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
-                w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0],
-                W: [0, -1], S: [0, 1], A: [-1, 0], D: [1, 0]
-            };
             if (e.key === "b" || e.key === "B") { e.preventDefault(); openShop(); return; }
             if (e.key === " " || e.key === "e" || e.key === "E") { e.preventDefault(); placeLadder(); return; }
             if (e.key === "q" || e.key === "Q") { e.preventDefault(); placeBox(); return; }
-            const m = map[e.key];
-            if (m) { e.preventDefault(); requestDig(m[0], m[1]); }
+            if (keyVec(e.key)) {
+                e.preventDefault();
+                heldKeys.add(e.key);
+                const v = heldVec();           // up + side held → diagonal
+                requestDig(v.dx, v.dy);
+            }
         }
 
-        function onKeyUp() { heldDir = null; }
+        function onKeyUp(e) {
+            if (e && keyVec(e.key)) heldKeys.delete(e.key);
+            heldDir = (heldKeys.size > 0) ? heldVec() : null;
+        }
 
         function loop(ts) {
             rafId = requestAnimationFrame(loop);
