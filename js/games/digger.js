@@ -824,6 +824,7 @@
 
             drawHUD();
             drawLadderButton();
+            drawBoxButton();
 
             if (flash > 0) {
                 ctx.fillStyle = "rgba(255,60,60," + (flash / 14) * 0.35 + ")";
@@ -1375,6 +1376,7 @@
         }
         let hudShopRect = null;
         let ladderBtnRect = null;
+        let boxBtnRect = null;
 
         function drawLadderButton() {
             const W = canvas.clientWidth, H = canvas.clientHeight;
@@ -1390,6 +1392,22 @@
             ctx.fillStyle = ladders > 0 ? "#ffd35a" : "#8a6a76";
             ctx.fillText("×" + ladders, bx + s / 2, by + s - 8);
             ladderBtnRect = { x: bx, y: by, w: s, h: s };
+        }
+
+        function drawBoxButton() {
+            const W = canvas.clientWidth, H = canvas.clientHeight;
+            const s = 58, m = 16;
+            const bx = W - s * 2 - m - 12, by = H - s - m;
+            ctx.fillStyle = boxes > 0 ? "rgba(36,38,64,0.92)" : "rgba(64,32,42,0.92)";
+            roundRect(bx, by, s, s, 14);
+            ctx.textAlign = "center";
+            ctx.font = Math.floor(s * 0.42) + "px system-ui, sans-serif";
+            ctx.fillStyle = boxes > 0 ? "#f2f3ff" : "#8a6a76";
+            ctx.fillText("\u{1F4E6}", bx + s / 2, by + s * 0.47);
+            ctx.font = "700 13px system-ui, sans-serif";
+            ctx.fillStyle = boxes > 0 ? "#ffd35a" : "#8a6a76";
+            ctx.fillText("×" + boxes, bx + s / 2, by + s - 8);
+            boxBtnRect = { x: bx, y: by, w: s, h: s };
         }
 
         function drawShop() {
