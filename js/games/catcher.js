@@ -10,6 +10,9 @@
         let basketX, targetX;
         let items, score, lives, alive, started, elapsed;
         let spawnTimer, rafId, lastTs, dragging;
+        let explosions, shakeT;
+        const SHAKE_DUR = 0.4;        // seconds a bomb shake lasts
+        const SHAKE_MAG = 16;         // max shake offset (px)
         const kids = !!host.kids;
         const MAX_LIVES = kids ? 5 : 3;
         const FALL_BASE = kids ? 150 : 200;       // px/sec at the start
@@ -52,6 +55,8 @@
             spawnTimer = 0.6;
             lastTs = 0;
             dragging = false;
+            explosions = [];
+            shakeT = 0;
             if (W) { basketX = W / 2; targetX = W / 2; }
             host.setScore(0);
         }
@@ -83,6 +88,21 @@
         }
 
         function update(dt) {
+            // Explosions and screen shake animate even during the game-over delay.
+            if (shakeT > 0) shakeT = Math.max(0, shakeT - dt);
+            for (let i = explosions.length - 1; i >= 0; i--) {
+                const ex = explosions[i];
+                ex.t += dt;
+                for (const p of ex.parts) {
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.vy += 380 * dt;        // gravity
+                    p.vx *= (1 - dt * 1.5);  // air drag
+                    p.life -= dt;
+                }
+                if (ex.t >= ex.life) explosions.splice(i, 1);
+            }
+
             if (!alive) return;
             elapsed += dt;
 
@@ -110,6 +130,7 @@
                     it.x >= basketX - half && it.x <= basketX + half) {
                     items.splice(i, 1);
                     if (it.type === "bomb") {
+                        spawnExplosion(it.x, it.y, it.r);
                         loseLife();
                     } else {
                         const gain = it.type === "gold" ? 3 : 1;
@@ -122,11 +143,63 @@
                 }
 
                 // Off the bottom: a missed star costs a life, bombs are safe.
+                // Kids Mode is forgiving — only bombs can cost a life.
                 if (it.y - it.r > H) {
                     items.splice(i, 1);
-                    if (it.type !== "bomb") loseLife();
+                    if (!kids && it.type !== "bomb") loseLife();
                 }
             }
+        }
+
+        function spawnExplosion(x, y, r) {
+            const parts = [];
+            const n = 20;
+            for (let i = 0; i < n; i++) {
+                const ang = (Math.PI * 2 * i) / n + Math.random() * 0.4;
+                const spd = 120 + Math.random() * 240;
+                const life = 0.45 + Math.random() * 0.45;
+                parts.push({
+                    x: x, y: y,
+                    vx: Math.cos(ang) * spd,
+                    vy: Math.sin(ang) * spd,
+                    life: life,
+                    maxLife: life,
+                    size: 2.5 + Math.random() * 4.5,
+                    color: i % 3 === 0 ? "#ffd166" : (i % 3 === 1 ? "#ff7b3d" : "#ff3d3d")
+                });
+            }
+            explosions.push({ x: x, y: y, t: 0, life: 0.6, r: r, parts: parts });
+            shakeT = SHAKE_DUR;
+            SGSound.play("explode");
+        }
+
+        function drawExplosion(ex) {
+            const k = Math.min(1, ex.t / ex.life);   // 0..1 progress
+            // Expanding shock ring
+            ctx.globalAlpha = Math.max(0, 1 - k);
+            ctx.strokeStyle = "rgba(255,180,80," + (1 - k) + ")";
+            ctx.lineWidth = Math.max(1, ex.r * 0.5 * (1 - k));
+            ctx.beginPath();
+            ctx.arc(ex.x, ex.y, ex.r * (1 + k * 4), 0, Math.PI * 2);
+            ctx.stroke();
+            // Bright flash core (early frames only)
+            if (k < 0.4) {
+                ctx.globalAlpha = (0.4 - k) / 0.4;
+                ctx.fillStyle = "#fff3c4";
+                ctx.beginPath();
+                ctx.arc(ex.x, ex.y, ex.r * (1.2 + k * 2.5), 0, Math.PI * 2);
+                ctx.fill();
+            }
+            // Flying debris particles
+            for (const p of ex.parts) {
+                if (p.life <= 0) continue;
+                ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
         }
 
         function drawStar(x, y, r, rot, fill, glow) {
@@ -215,12 +288,22 @@
         }
 
         function draw() {
-            // Night sky
+            // Screen shake offset (decays over SHAKE_DUR).
+            let shx = 0, shy = 0;
+            if (shakeT > 0) {
+                const mag = SHAKE_MAG * (shakeT / SHAKE_DUR);
+                shx = (Math.random() * 2 - 1) * mag;
+                shy = (Math.random() * 2 - 1) * mag;
+            }
+            ctx.save();
+            ctx.translate(shx, shy);
+
+            // Night sky (over-filled so the shake never exposes the edges)
             const grad = ctx.createLinearGradient(0, 0, 0, H);
             grad.addColorStop(0, "#1a1a3a");
             grad.addColorStop(1, "#2a1a40");
             ctx.fillStyle = grad;
-            ctx.fillRect(0, 0, W, H);
+            ctx.fillRect(-SHAKE_MAG * 2, -SHAKE_MAG * 2, W + SHAKE_MAG * 4, H + SHAKE_MAG * 4);
 
             // Twinkle backdrop
             ctx.fillStyle = "rgba(255,255,255,0.5)";
@@ -241,6 +324,9 @@
 
             drawBasket();
 
+            // Explosions burst on top of everything in the play field
+            for (const ex of explosions) drawExplosion(ex);
+
             // Lives as hearts
             ctx.font = "20px system-ui, sans-serif";
             ctx.textAlign = "left";
@@ -260,6 +346,8 @@
                 ctx.fillText("Drag the basket • dodge the bombs \u{1F4A3}", W / 2, H * 0.4 + 26);
                 ctx.fillText("Gold stars are worth 3", W / 2, H * 0.4 + 48);
             }
+
+            ctx.restore();
         }
 
         function loop(ts) {
