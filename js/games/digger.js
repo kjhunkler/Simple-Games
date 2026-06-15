@@ -643,8 +643,9 @@
 
             // Camera eases toward keeping the miner centred horizontally and a bit above centre vertically.
             const targetCamX = player.x;
-            const minCamX = viewCols / 2 - 1;
-            const maxCamX = COLS - viewCols / 2 + 1;
+            const halfView = canvas.clientWidth / (2 * cell) - 0.5;
+            const minCamX = halfView;
+            const maxCamX = COLS - halfView - 1;
             camX += (Math.max(minCamX, Math.min(maxCamX, targetCamX)) - camX) * 0.14;
             const targetCam = player.y - Math.floor((viewRows - 2) * 0.42);
             camY += (Math.max(SURFACE_Y - SKY_ROWS, targetCam) - camY) * 0.18;
@@ -800,8 +801,7 @@
                 ctx.fillRect(bx, by, bw * prog, bh);
             }
 
-            // Surface scenery: trees and rare creatures above ground
-            drawTrees();
+            // Surface scenery: rare creatures above ground
             drawSurfaceCreatures();
 
             // Shop building on the surface (top-right corner of the mine).
@@ -894,59 +894,6 @@
                 ctx.fill();
             }
             ctx.globalAlpha = 1;
-        }
-
-        // Draw tree cluster along the surface edge
-        function drawTrees() {
-            const groundY = topPad + (SURFACE_Y - camY) * cell;
-            if (groundY <= topPad || groundY > canvas.clientHeight + cell) return;
-            // Place trees every 3 columns; skip cols occupied by the shop (cols 16-17)
-            const shopStart = COLS - 2;
-            for (let col = 0; col < COLS; col++) {
-                if (col % 3 !== 0) continue;
-                if (col >= shopStart) continue;
-                const tx = offX() + col * cell + cell * 0.5;
-                drawTree(tx, groundY, cell);
-            }
-        }
-
-        // Draw a single stylised pine/round tree at (tx, gy)
-        function drawTree(tx, gy, sz) {
-            const isPine = (Math.floor(tx / 17) % 3 !== 0); // mix of round & pine
-            const trunkH = sz * 0.38;
-            const trunkW = sz * 0.13;
-            // Trunk
-            ctx.fillStyle = "#6b3f1a";
-            ctx.fillRect(tx - trunkW / 2, gy - trunkH, trunkW, trunkH);
-            if (isPine) {
-                // Pine: stacked triangles
-                ctx.fillStyle = "#1f5c28";
-                for (let t = 0; t < 3; t++) {
-                    const layer = 2 - t;
-                    const ly = gy - trunkH - sz * (0.3 + t * 0.28);
-                    const lw = sz * (0.6 - t * 0.14);
-                    ctx.beginPath();
-                    ctx.moveTo(tx, ly - sz * 0.32);
-                    ctx.lineTo(tx + lw / 2, ly);
-                    ctx.lineTo(tx - lw / 2, ly);
-                    ctx.closePath();
-                    ctx.fillStyle = t === 0 ? "#246030" : t === 1 ? "#1f5c28" : "#175022";
-                    ctx.fill();
-                }
-            } else {
-                // Round canopy
-                const canopyR = sz * 0.42;
-                const canopyY = gy - trunkH - canopyR * 0.65;
-                ctx.fillStyle = "#1f6630";
-                ctx.beginPath();
-                ctx.arc(tx, canopyY, canopyR, 0, Math.PI * 2);
-                ctx.fill();
-                // Highlight blob
-                ctx.fillStyle = "#2e8a44";
-                ctx.beginPath();
-                ctx.arc(tx - canopyR * 0.2, canopyY - canopyR * 0.25, canopyR * 0.55, 0, Math.PI * 2);
-                ctx.fill();
-            }
         }
 
         // Draw rare bird and butterfly when active
@@ -1411,7 +1358,7 @@
             ctx.fillStyle = atSurface ? "#eafff0" : "#6b6b86";
             ctx.font = "700 13px system-ui, sans-serif";
             ctx.fillText("\u{1F6D2} SHOP", W / 2, by + 17);
-            hudShopRect = { x: bx, y: by, w: bw, h: bh };
+            hudShopRect = { x: bx, y: 0, w: bw, h: topPad };
 
             // Message ticker
             if (msgT > 0 && msg) {
