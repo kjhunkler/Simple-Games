@@ -36,6 +36,16 @@
 
     const HARD = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 1 };
 
+    // Base mining time per tile type (ms) using the starting (level-1) pickaxe.
+    // Each pickaxe upgrade shaves time off; see digTimeFor().
+    const DIG_MS = {
+        [T.DIRT]: 500,
+        [T.ROCK]: 800,
+        [T.DENSE]: 1100,
+        [T.OBSID]: 1500,
+        [T.HAZARD]: 300
+    };
+
     // Treasure tiers carried inside a dug tile.
     const LOOT = {
         none: 0,
@@ -57,6 +67,10 @@
         // World: sparse map of "x,y" -> { type, hard, loot }
         const world = new Map();
         let player, stats, carry, banked, depthBest, mode, shopRects, msg, msgT;
+        let mining = null;        // tile being broken: { x, y, dx, dy, t, required }
+        let heldDir = null;       // direction held (swipe-drag / key) for chained digging
+        let dead = false;         // true after a game over
+        let lastTs = 0;           // last frame timestamp (ms) for real-time mining
         let flash = 0;            // damage flash timer
         let particles = [];
 
@@ -218,6 +232,10 @@
             msgT = 240;
             particles = [];
             camY = 0;
+            mining = null;
+            heldDir = null;
+            dead = false;
+            lastTs = 0;
             host.setScore(0);
         }
 
@@ -236,59 +254,68 @@
         }
 
         // ---------- Actions ----------
-        function tryMove(dx, dy) {
-            if (mode !== "play") return;
-            const nx = player.x + dx;
-            const ny = player.y + dy;
-            if (nx < 0 || nx >= COLS) return;
-            if (ny < SURFACE_Y) return;             // can't fly into the sky
+        // Mining time for a tile: base time minus 200ms per pickaxe level,
+        // floored so it never gets instant. Kids Mode digs a little faster.
+        // e.g. dirt = 500ms with the level-1 pickaxe, 300ms with level 2.
+        function digTimeFor(type) {
+            let ms = (DIG_MS[type] || 500) - stats.digLvl * 200;
+            if (kids) ms *= 0.8;
+            return Math.max(120, ms);
+        }
 
-            // Surface row & above are always walkable.
-            if (ny <= SURFACE_Y) {
+        // A directional input (one swipe step or key press). Walking is
+        // instant; a solid tile starts a timed mine that finishes in update().
+        function requestDig(dx, dy) {
+            if (mode !== "play" || dead) return;
+            heldDir = { dx: dx, dy: dy };
+            if (!mining || mining.dx !== dx || mining.dy !== dy) beginStep(dx, dy);
+        }
+
+        function beginStep(dx, dy) {
+            mining = null;
+            const nx = player.x + dx, ny = player.y + dy;
+            if (nx < 0 || nx >= COLS) return;
+            if (ny < SURFACE_Y) return;             // can't go up into the sky
+
+            if (ny <= SURFACE_Y) {                  // surface row: walk
                 player.x = nx; player.y = ny;
-                arriveSurface();
+                onEnter(nx, ny);
                 return;
             }
-
             const t = tileAt(nx, ny);
-            if (t.type === T.EMPTY) {
+            if (t.type === T.EMPTY) {               // walk into dug-out space
                 player.x = nx; player.y = ny;
                 onEnter(nx, ny);
                 return;
             }
             if (t.type === T.BEDROCK) { SGSound.play("wrong"); return; }
-
-            // It's solid — try to dig it.
-            dig(nx, ny, t);
-        }
-
-        function dig(x, y, t) {
             if (stats.stam <= 0) {
                 setMsg("Out of stamina — head up! ↑", 120);
-                SGSound.play("wrong");
-                host.vibrate(20);
+                SGSound.play("wrong"); host.vibrate(20);
                 return;
             }
             if (HARD[t.type] > stats.dig && t.type !== T.HAZARD) {
                 setMsg("Rock too hard — upgrade pickaxe", 120);
-                SGSound.play("wrong");
-                host.vibrate([20, 30, 20]);
-                spawnParticles(cx(x), cyRow(y), "#6b7280", 4);
+                SGSound.play("wrong"); host.vibrate([20, 30, 20]);
+                spawnParticles(cx(nx), cyRow(ny), "#6b7280", 4);
                 return;
             }
+            // Start chipping away; update() finishes it after `required` ms.
+            mining = { x: nx, y: ny, dx: dx, dy: dy, t: 0, required: digTimeFor(t.type) };
+        }
 
+        function breakTile(x, y, t) {
             stats.stam--;
             const cxp = cx(x), cyp = cyRow(y);
 
             if (t.type === T.HAZARD) {
                 world.set(key(x, y), { type: T.EMPTY, hard: 0, loot: 0 });
-                damage(1, "Gas pocket! −❤️");
                 spawnParticles(cxp, cyp, "#7CFF9E", 14);
                 player.x = x; player.y = y;
+                damage(1, "Gas pocket! −❤️");
                 return;
             }
 
-            // Break it.
             const loot = t.loot;
             world.set(key(x, y), { type: T.EMPTY, hard: 0, loot: 0 });
             SGSound.play("drop");
@@ -349,16 +376,15 @@
         }
 
         function collapse() {
-            // Roguelike setback: lose the carried haul, wake at the surface.
-            // Banked coins and upgrades are kept.
+            // Out of hearts — game over. Banked coins are the final score.
+            dead = true;
+            mining = null;
+            heldDir = null;
+            carry = 0;
             SGSound.play("gameover");
             host.vibrate([60, 40, 80, 40, 120]);
-            carry = 0;
-            player.x = Math.floor(COLS / 2);
-            player.y = SURFACE_Y;
-            stats.hp = maxHP();
-            stats.stam = maxStam();
-            setMsg("You blacked out! Hauled back up empty-handed.", 220);
+            setMsg("Out of hearts!", 200);
+            host.gameOver(banked);
         }
 
         // ---------- Shop ----------
@@ -401,7 +427,26 @@
             }
         }
 
-        function update() {
+        function update(dt) {
+            // Advance an in-progress mine; finish it once enough time passes.
+            if (mining && !dead && mode === "play") {
+                const t = tileAt(mining.x, mining.y);
+                if (t.type === T.EMPTY || stats.stam <= 0) {
+                    mining = null;                  // tile gone or no stamina left
+                } else {
+                    mining.t += dt * 1000;
+                    if (Math.random() < dt * 14) {
+                        spawnParticles(cx(mining.x), cyRow(mining.y), tileColor(t.type), 2);
+                    }
+                    if (mining.t >= mining.required) {
+                        breakTile(mining.x, mining.y, t);
+                        mining = null;
+                        // Keep digging while a direction is held down.
+                        if (!dead && heldDir) beginStep(heldDir.dx, heldDir.dy);
+                    }
+                }
+            }
+
             // Camera eases toward keeping the miner a bit above centre.
             const targetCam = player.y - Math.floor((viewRows - 2) * 0.42);
             camY += (Math.max(SURFACE_Y - SKY_ROWS, targetCam) - camY) * 0.18;
@@ -482,6 +527,21 @@
                         }
                     }
                 }
+            }
+
+            // Mining progress overlay on the tile being broken.
+            if (mining) {
+                const mx = offX + mining.x * cell;
+                const my = topPad + (mining.y - camY) * cell;
+                const prog = Math.min(1, mining.t / mining.required);
+                ctx.fillStyle = "rgba(0,0,0,0.32)";
+                ctx.fillRect(mx, my, cell + 1, cell + 1);
+                const bw = cell * 0.7, bx = mx + (cell - bw) / 2;
+                const bh = cell * 0.12, by = my + cell * 0.78;
+                ctx.fillStyle = "rgba(0,0,0,0.55)";
+                ctx.fillRect(bx, by, bw, bh);
+                ctx.fillStyle = "#ffd35a";
+                ctx.fillRect(bx, by, bw * prog, bh);
             }
 
             // Shop building on the surface (top-right corner of the mine).
@@ -784,16 +844,17 @@
             const dx = p.mx - drag.x, dy = p.my - drag.y;
             const thresh = Math.max(18, cell * 0.5);
             if (Math.abs(dx) < thresh && Math.abs(dy) < thresh) return;
-            // Dig/move one tile in the dominant swipe direction (4-dir).
-            if (Math.abs(dx) >= Math.abs(dy)) tryMove(Math.sign(dx), 0);
-            else tryMove(0, Math.sign(dy));
+            // Dig/move in the dominant swipe direction (4-dir).
+            if (Math.abs(dx) >= Math.abs(dy)) requestDig(Math.sign(dx), 0);
+            else requestDig(0, Math.sign(dy));
             // Re-anchor so a held drag keeps digging tile by tile.
             drag = { x: p.mx, y: p.my };
         }
 
-        function onPointerUp() { drag = null; }
+        function onPointerUp() { drag = null; heldDir = null; }
 
         function onKey(e) {
+            if (dead) return;
             if (mode === "shop") {
                 if (e.key === "Escape" || e.key === "Enter") { e.preventDefault(); closeShop(); }
                 const idx = parseInt(e.key, 10);
@@ -807,12 +868,17 @@
             };
             if (e.key === "b" || e.key === "B") { e.preventDefault(); openShop(); return; }
             const m = map[e.key];
-            if (m) { e.preventDefault(); tryMove(m[0], m[1]); }
+            if (m) { e.preventDefault(); requestDig(m[0], m[1]); }
         }
 
-        function loop() {
+        function onKeyUp() { heldDir = null; }
+
+        function loop(ts) {
             rafId = requestAnimationFrame(loop);
-            update();
+            if (!lastTs) lastTs = ts;
+            const dt = Math.min((ts - lastTs) / 1000, 0.05);
+            lastTs = ts;
+            update(dt);
             draw();
         }
 
@@ -828,6 +894,7 @@
                 window.addEventListener("mousemove", onPointerMove);
                 window.addEventListener("mouseup", onPointerUp);
                 window.addEventListener("keydown", onKey);
+                window.addEventListener("keyup", onKeyUp);
                 rafId = requestAnimationFrame(loop);
             },
             restart() {
@@ -843,6 +910,7 @@
                 window.removeEventListener("mousemove", onPointerMove);
                 window.removeEventListener("mouseup", onPointerUp);
                 window.removeEventListener("keydown", onKey);
+                window.removeEventListener("keyup", onKeyUp);
             }
         };
     }
