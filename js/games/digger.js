@@ -16,7 +16,7 @@
 (function () {
     "use strict";
 
-    const COLS = 9;                 // mine width
+    const COLS = 18;                // mine width (wide world, camera scrolls horizontally)
     const SURFACE_Y = 0;            // walkable ground row; y>0 is underground
     const SKY_ROWS = 2;            // rows of sky drawn above the surface
 
@@ -25,7 +25,7 @@
     // with a guaranteed loot budget, so a player who clears it can always
     // afford the first pickaxe (and then mine the rock beneath).
     const TOPSOIL = 6;              // rows 1..TOPSOIL are guaranteed dirt
-    const STARTER_LOOT = 70;        // coins guaranteed reachable before any upgrade
+    const STARTER_LOOT = 120;       // coins guaranteed reachable before any upgrade
 
     // Tile kinds. `hard` = dig power required to break it.
     const T = {
@@ -65,9 +65,12 @@
         const ctx = canvas.getContext("2d");
         const kids = !!host.kids;
 
-        let cell, offX, topPad;
-        let viewRows, camY;
+        let cell, topPad;
+        let viewRows, viewCols;
+        let camX, camY;   // camera in world-column / world-row (fractional)
         let rafId;
+        // offX / offY are pixel offsets; computed per-draw from camX/camY
+        function offX() { return canvas.clientWidth / 2 - (camX + 0.5) * cell; }
 
         // World: sparse map of "x,y" -> { type, hard, loot }
         const world = new Map();
@@ -80,6 +83,12 @@
         let particles = [];
         const climbMsg = "Place a ladder to climb ↑";
         const noLadderMsg = "No ladders! Buy more at the shop";
+
+        // ----- Surface scene animation state -----
+        let surfaceAnimT = 0;       // running time (seconds) for surface animations
+        let clouds = [];            // { x, y, w, speed, alpha }
+        let bird = null;            // { x, y, vy, phase, active, cooldown }
+        let butterfly = null;       // { x, y, angle, wobble, active, cooldown }
 
         // ----- Upgradeable stats -----
         function baseStats() {
@@ -106,7 +115,7 @@
                 key: "dig", name: "Pickaxe", emoji: "⛏️",
                 desc: () => "Break tier-" + (stats.dig + 1) + " rock",
                 max: 3, lvl: () => stats.digLvl,
-                cost: () => [40, 110, 240][stats.digLvl],
+                cost: () => [25, 40, 240][stats.digLvl],
                 buy: () => { stats.digLvl++; stats.dig++; }
             },
             {
@@ -226,8 +235,9 @@
             const W = canvas.clientWidth;
             const H = canvas.clientHeight;
             topPad = 64;                       // HUD band
-            cell = Math.floor(W / COLS);
-            offX = Math.floor((W - cell * COLS) / 2);
+            // Size cells so ~9 columns are visible at a time, world scrolls horizontally
+            cell = Math.floor(W / 9);
+            viewCols = Math.ceil(W / cell) + 2;
             viewRows = Math.ceil((H - topPad) / cell) + 2;
         }
 
@@ -245,6 +255,7 @@
             msg = "Swipe to dig! ⬇️";
             msgT = 240;
             particles = [];
+            camX = player.x;
             camY = 0;
             mining = null;
             heldDir = null;
@@ -252,6 +263,22 @@
             lastTs = 0;
             ladders = kids ? 10 : 5;
             host.setScore(0);
+
+            // Surface scene animation init
+            surfaceAnimT = 0;
+            const W = canvas.clientWidth;
+            clouds = [];
+            for (let i = 0; i < 4; i++) {
+                clouds.push({
+                    x: Math.random() * W * 1.4,
+                    y: topPad + 10 + Math.random() * 30,
+                    w: 60 + Math.random() * 70,
+                    speed: 8 + Math.random() * 10,
+                    alpha: 0.55 + Math.random() * 0.3
+                });
+            }
+            bird = { x: -80, y: topPad + 18, vy: 0, phase: 0, active: false, cooldown: 8 + Math.random() * 20 };
+            butterfly = { x: 0, y: 0, angle: 0, wobble: 0, active: false, cooldown: 15 + Math.random() * 30 };
         }
 
         function setMsg(text, frames) { msg = text; msgT = frames || 150; }
@@ -511,7 +538,7 @@
         }
 
         // ---------- Coordinate helpers ----------
-        function cx(col) { return offX + col * cell + cell / 2; }
+        function cx(col) { return offX() + col * cell + cell / 2; }
         function cyRow(row) { return topPad + (row - camY) * cell + cell / 2; }
 
         // ---------- Drawing ----------
@@ -548,7 +575,11 @@
                 }
             }
 
-            // Camera eases toward keeping the miner a bit above centre.
+            // Camera eases toward keeping the miner centred horizontally and a bit above centre vertically.
+            const targetCamX = player.x;
+            const minCamX = viewCols / 2 - 1;
+            const maxCamX = COLS - viewCols / 2 + 1;
+            camX += (Math.max(minCamX, Math.min(maxCamX, targetCamX)) - camX) * 0.14;
             const targetCam = player.y - Math.floor((viewRows - 2) * 0.42);
             camY += (Math.max(SURFACE_Y - SKY_ROWS, targetCam) - camY) * 0.18;
 
@@ -560,29 +591,83 @@
                 p.x += p.vx; p.y += p.vy; p.vy += 0.25; p.life--;
                 if (p.life <= 0) particles.splice(i, 1);
             }
+
+            // Surface scene: advance clouds, bird, butterfly every frame
+            surfaceAnimT += dt;
+            const W2 = canvas.clientWidth;
+            for (const c of clouds) {
+                c.x += c.speed * dt;
+                if (c.x - c.w > W2) c.x = -c.w * 1.5;
+            }
+            // Bird: rare flyover, left to right
+            if (bird.active) {
+                bird.x += 90 * dt;
+                bird.phase += dt * 6;
+                bird.y += Math.sin(bird.phase) * 0.4;
+                if (bird.x > W2 + 60) { bird.active = false; bird.cooldown = 12 + Math.random() * 25; }
+            } else {
+                bird.cooldown -= dt;
+                if (bird.cooldown <= 0) {
+                    bird.active = true;
+                    bird.x = -60;
+                    bird.y = topPad + 12 + Math.random() * 22;
+                    bird.phase = 0;
+                }
+            }
+            // Butterfly: rare hover near surface
+            if (butterfly.active) {
+                butterfly.angle += dt * 1.4;
+                butterfly.wobble += dt * 3.5;
+                butterfly.x += Math.cos(butterfly.angle) * 18 * dt;
+                butterfly.y += Math.sin(butterfly.wobble) * 14 * dt;
+                butterfly.life -= dt;
+                // Keep in horizontal bounds (clamp to world pixel extents)
+                const _ox = offX();
+                if (butterfly.x < _ox) butterfly.x = _ox + 4;
+                if (butterfly.x > _ox + COLS * cell - 4) butterfly.x = _ox + COLS * cell - 4;
+                if (butterfly.life <= 0) { butterfly.active = false; butterfly.cooldown = 20 + Math.random() * 40; }
+            } else {
+                butterfly.cooldown -= dt;
+                if (butterfly.cooldown <= 0) {
+                    butterfly.active = true;
+                    butterfly.x = offX() + (0.1 + Math.random() * 0.8) * COLS * cell;
+                    butterfly.y = topPad + (SURFACE_Y - camY) * cell - cell * 1.8;
+                    butterfly.angle = Math.random() * Math.PI * 2;
+                    butterfly.wobble = 0;
+                    butterfly.life = 6 + Math.random() * 5;
+                }
+            }
         }
 
         function draw() {
             const W = canvas.clientWidth, H = canvas.clientHeight;
             ctx.clearRect(0, 0, W, H);
 
+            const ox = offX(); // pixel left-edge of col 0 this frame
             const startRow = Math.floor(camY) - 1;
             const endRow = startRow + viewRows + 2;
+            const startCol = Math.floor(camX - viewCols / 2) - 1;
+            const endCol = startCol + viewCols + 2;
             const lr = lampR();
             const pcx = cx(player.x), pcy = cyRow(player.y);
 
+            // Sky pre-pass: full sky backdrop rendered once before tile loop
+            const groundY = topPad + (SURFACE_Y - camY) * cell;
+            if (groundY > topPad) {
+                drawSkyScene(W, topPad, groundY - topPad);
+            }
+
             for (let row = startRow; row <= endRow; row++) {
-                for (let col = 0; col < COLS; col++) {
-                    const x = offX + col * cell;
+                for (let col = startCol; col <= endCol; col++) {
+                    const x = ox + col * cell;
                     const y = topPad + (row - camY) * cell;
 
                     if (row < SURFACE_Y) {
-                        // Sky
-                        ctx.fillStyle = "#2a2f5a";
-                        ctx.fillRect(x, y, cell + 1, cell + 1);
+                        // Sky handled by pre-pass above — skip tile fill
                         continue;
                     }
                     if (row === SURFACE_Y) {
+                        if (col < 0 || col >= COLS) continue;
                         ctx.fillStyle = "#3f8a45";   // grass
                         ctx.fillRect(x, y, cell + 1, cell + 1);
                         ctx.fillStyle = "#357a3c";
@@ -634,7 +719,7 @@
 
             // Mining progress overlay on the tile being broken.
             if (mining) {
-                const mx = offX + mining.x * cell;
+                const mx = offX() + mining.x * cell;
                 const my = topPad + (mining.y - camY) * cell;
                 const prog = Math.min(1, mining.t / mining.required);
                 ctx.fillStyle = "rgba(0,0,0,0.32)";
@@ -646,6 +731,10 @@
                 ctx.fillStyle = "#ffd35a";
                 ctx.fillRect(bx, by, bw * prog, bh);
             }
+
+            // Surface scenery: trees and rare creatures above ground
+            drawTrees();
+            drawSurfaceCreatures();
 
             // Shop building on the surface (top-right corner of the mine).
             drawShopBuilding();
@@ -675,6 +764,206 @@
 
             if (mode === "shop") drawShop();
         }
+
+        // ========== Surface scene drawing helpers ==========
+
+        // Full sky backdrop: gradient, mountains, clouds
+        function drawSkyScene(W, top, skyH) {
+            // Sky gradient — dawn-to-noon blue
+            const grad = ctx.createLinearGradient(0, top, 0, top + skyH);
+            grad.addColorStop(0, "#1a2355");
+            grad.addColorStop(0.45, "#3a6bb5");
+            grad.addColorStop(1, "#6fb3e0");
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, top, W, skyH);
+
+            // Far mountain range (muted blue-grey)
+            drawMtnRange(0, top + skyH, W, skyH * 0.55, "#4a6080", 7, 0.42);
+            // Near mountain range (darker greens)
+            drawMtnRange(0, top + skyH, W, skyH * 0.32, "#2f4a2f", 5, 0.68);
+
+            // Clouds
+            for (const c of clouds) {
+                drawCloud(c.x, c.y, c.w, c.alpha);
+            }
+        }
+
+        // Procedural mountain silhouette using a seeded pseudo-random ridge
+        function drawMtnRange(left, baseY, width, maxH, color, peaks, seed) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(left, baseY);
+            const step = width / (peaks * 2);
+            let x = left;
+            // Simple deterministic peaks using sine combination
+            for (let i = 0; i <= peaks * 2; i++) {
+                const t2 = i / (peaks * 2);
+                const h = maxH * (0.3 + 0.7 * Math.abs(Math.sin(t2 * Math.PI * peaks + seed * 3.7)) *
+                    (0.6 + 0.4 * Math.sin(t2 * Math.PI * (peaks + 1) + seed)));
+                ctx.lineTo(x, baseY - h);
+                x += step;
+            }
+            ctx.lineTo(left + width, baseY);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // Fluffy cloud made of overlapping circles
+        function drawCloud(cx2, cy2, w, alpha) {
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = "#e8f0ff";
+            const h = w * 0.38;
+            const puffs = [
+                { dx: 0, dy: 0, r: h * 0.7 },
+                { dx: w * 0.22, dy: -h * 0.1, r: h * 0.85 },
+                { dx: w * 0.46, dy: h * 0.02, r: h * 0.75 },
+                { dx: w * 0.68, dy: -h * 0.05, r: h * 0.65 },
+                { dx: w * 0.88, dy: h * 0.08, r: h * 0.5 }
+            ];
+            for (const p of puffs) {
+                ctx.beginPath();
+                ctx.arc(cx2 + p.dx, cy2 + p.dy, p.r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        // Draw tree cluster along the surface edge
+        function drawTrees() {
+            const groundY = topPad + (SURFACE_Y - camY) * cell;
+            if (groundY <= topPad || groundY > canvas.clientHeight + cell) return;
+            // Place trees every 3 columns; skip cols occupied by the shop (cols 16-17)
+            const shopStart = COLS - 2;
+            for (let col = 0; col < COLS; col++) {
+                if (col % 3 !== 0) continue;
+                if (col >= shopStart) continue;
+                const tx = offX() + col * cell + cell * 0.5;
+                drawTree(tx, groundY, cell);
+            }
+        }
+
+        // Draw a single stylised pine/round tree at (tx, gy)
+        function drawTree(tx, gy, sz) {
+            const isPine = (Math.floor(tx / 17) % 3 !== 0); // mix of round & pine
+            const trunkH = sz * 0.38;
+            const trunkW = sz * 0.13;
+            // Trunk
+            ctx.fillStyle = "#6b3f1a";
+            ctx.fillRect(tx - trunkW / 2, gy - trunkH, trunkW, trunkH);
+            if (isPine) {
+                // Pine: stacked triangles
+                ctx.fillStyle = "#1f5c28";
+                for (let t = 0; t < 3; t++) {
+                    const layer = 2 - t;
+                    const ly = gy - trunkH - sz * (0.3 + t * 0.28);
+                    const lw = sz * (0.6 - t * 0.14);
+                    ctx.beginPath();
+                    ctx.moveTo(tx, ly - sz * 0.32);
+                    ctx.lineTo(tx + lw / 2, ly);
+                    ctx.lineTo(tx - lw / 2, ly);
+                    ctx.closePath();
+                    ctx.fillStyle = t === 0 ? "#246030" : t === 1 ? "#1f5c28" : "#175022";
+                    ctx.fill();
+                }
+            } else {
+                // Round canopy
+                const canopyR = sz * 0.42;
+                const canopyY = gy - trunkH - canopyR * 0.65;
+                ctx.fillStyle = "#1f6630";
+                ctx.beginPath();
+                ctx.arc(tx, canopyY, canopyR, 0, Math.PI * 2);
+                ctx.fill();
+                // Highlight blob
+                ctx.fillStyle = "#2e8a44";
+                ctx.beginPath();
+                ctx.arc(tx - canopyR * 0.2, canopyY - canopyR * 0.25, canopyR * 0.55, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Draw rare bird and butterfly when active
+        function drawSurfaceCreatures() {
+            if (bird.active) drawBird(bird.x, bird.y, bird.phase);
+            if (butterfly.active) drawButterfly(butterfly.x, butterfly.y, surfaceAnimT);
+        }
+
+        // Simple V-wing bird silhouette
+        function drawBird(bx, by, phase) {
+            const flap = Math.sin(phase) * 0.4;       // 0..0.4 wing dip
+            ctx.fillStyle = "#1a1a3a";
+            ctx.strokeStyle = "#1a1a3a";
+            ctx.lineWidth = 2;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            // Left wing
+            ctx.moveTo(bx, by);
+            ctx.quadraticCurveTo(bx - 11, by - 8 + flap * 14, bx - 20, by + 3 + flap * 10);
+            // Right wing
+            ctx.moveTo(bx, by);
+            ctx.quadraticCurveTo(bx + 11, by - 8 + flap * 14, bx + 20, by + 3 + flap * 10);
+            ctx.stroke();
+            // Body dot
+            ctx.beginPath();
+            ctx.arc(bx, by, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Delicate butterfly with colourful wings
+        function drawButterfly(bx2, by2, t2) {
+            const flap = Math.sin(t2 * 9) * 0.5 + 0.5; // 0..1
+            const wingW = cell * 0.28;
+            const wingH = cell * 0.22;
+            ctx.save();
+            ctx.translate(bx2, by2);
+            // Upper wings (bright orange/yellow)
+            const upper = [
+                { sx: -1, color: "#ff9020" },
+                { sx: 1, color: "#ff9020" }
+            ];
+            for (const w of upper) {
+                ctx.save();
+                ctx.scale(w.sx, 1);
+                ctx.fillStyle = w.color;
+                ctx.globalAlpha = 0.92;
+                ctx.beginPath();
+                ctx.ellipse(wingW * (0.3 + flap * 0.4), -wingH * 0.4, wingW * (0.9 - flap * 0.3), wingH * 0.7, -0.3, 0, Math.PI * 2);
+                ctx.fill();
+                // Wing dot
+                ctx.fillStyle = "#1a0a00";
+                ctx.globalAlpha = 0.6;
+                ctx.beginPath();
+                ctx.ellipse(wingW * (0.55 + flap * 0.25), -wingH * 0.3, wingW * 0.16, wingH * 0.18, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+            // Lower wings (smaller, slightly blue-tipped)
+            for (const w of upper) {
+                ctx.save();
+                ctx.scale(w.sx, 1);
+                ctx.fillStyle = "#ffcc00";
+                ctx.globalAlpha = 0.85;
+                ctx.beginPath();
+                ctx.ellipse(wingW * (0.25 + flap * 0.3), wingH * 0.5, wingW * 0.55, wingH * 0.45, 0.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+            // Body
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "#1a0a00";
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 2, 7, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // Antennae
+            ctx.strokeStyle = "#1a0a00";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-1, -6); ctx.lineTo(-5, -13);
+            ctx.moveTo(1, -6); ctx.lineTo(5, -13);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // ====================================================
 
         function drawGem(cxp, cyp, loot, light) {
             let color = "#ffd35a";
@@ -734,27 +1023,255 @@
 
         let shopBtnRect = null;
         function drawShopBuilding() {
-            const col = COLS - 1;
-            const x = offX + col * cell;
-            const y = topPad + (SURFACE_Y - camY) * cell - cell * 0.9;
-            const w = cell, h = cell * 0.9;
-            // hut
-            ctx.fillStyle = "#8a5a3c";
-            ctx.fillRect(x + cell * 0.08, y + h * 0.4, w * 0.84, h * 0.6);
-            // roof
-            ctx.fillStyle = "#c0492f";
+            // The shop spans 2 columns wide and sits on the surface row.
+            // Anchor: right edge of the mine grid, bottom = surface ground line.
+            const groundY = topPad + (SURFACE_Y - camY) * cell;
+            const shopW = cell * 2.1;
+            const shopH = cell * 2.4;
+            const sx = offX() + COLS * cell - shopW;   // left edge
+            const sy = groundY - shopH;               // top edge
+
+            // --- Foundation / stone wall ---
+            ctx.fillStyle = "#5a5060";
+            ctx.fillRect(sx, sy + shopH * 0.38, shopW, shopH * 0.62);
+
+            // Stone bricks texture
+            ctx.fillStyle = "#4a4055";
+            const brickH = shopH * 0.10;
+            const brickW = shopW * 0.32;
+            for (let row = 0; row < 5; row++) {
+                const by2 = sy + shopH * 0.38 + row * brickH;
+                const offset = (row % 2 === 0) ? 0 : brickW * 0.5;
+                for (let col = 0; col < 4; col++) {
+                    ctx.strokeStyle = "#3a3048";
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(sx + offset + col * brickW + 1, by2 + 1, brickW - 2, brickH - 2);
+                }
+            }
+
+            // --- Roof (pitched, tiled) ---
+            const roofBaseY = sy + shopH * 0.38;
+            const roofPeakY = sy;
+            ctx.fillStyle = "#8b2a1e";
             ctx.beginPath();
-            ctx.moveTo(x, y + h * 0.45);
-            ctx.lineTo(x + w / 2, y);
-            ctx.lineTo(x + w, y + h * 0.45);
+            ctx.moveTo(sx - cell * 0.1, roofBaseY);
+            ctx.lineTo(sx + shopW / 2, roofPeakY);
+            ctx.lineTo(sx + shopW + cell * 0.1, roofBaseY);
             ctx.closePath();
             ctx.fill();
-            // sign
+            // Shingle lines
+            ctx.strokeStyle = "#6b1e14";
+            ctx.lineWidth = 1.5;
+            const shingleRows = 5;
+            for (let sr = 1; sr <= shingleRows; sr++) {
+                const t2 = sr / (shingleRows + 1);
+                const lx = sx + (shopW / 2) * t2 - cell * 0.1 * (1 - t2);
+                const rx = sx + shopW - (shopW / 2) * t2 + cell * 0.1 * (1 - t2);
+                const ry = roofPeakY + (roofBaseY - roofPeakY) * t2;
+                ctx.beginPath(); ctx.moveTo(lx, ry); ctx.lineTo(rx, ry); ctx.stroke();
+            }
+            // Roof ridge cap
+            ctx.fillStyle = "#c0392b";
+            ctx.fillRect(sx + shopW / 2 - 4, roofPeakY - 3, 8, 12);
+
+            // --- Chimney (left side) ---
+            const chimneyX = sx + shopW * 0.18;
+            const chimneyW = shopW * 0.13;
+            ctx.fillStyle = "#4a3838";
+            ctx.fillRect(chimneyX, sy - cell * 0.35, chimneyW, shopH * 0.3 + cell * 0.35);
+            ctx.fillStyle = "#3a2828";
+            ctx.fillRect(chimneyX - 3, sy - cell * 0.35, chimneyW + 6, chimneyW * 0.4);
+            // Smoke puffs
+            const smokeT = surfaceAnimT * 0.7;
+            for (let s = 0; s < 3; s++) {
+                const sf2 = ((smokeT + s * 0.55) % 1.65) / 1.65;
+                const sAlpha = Math.max(0, 0.5 - sf2 * 0.5);
+                const sY = sy - cell * 0.35 - sf2 * cell * 0.8;
+                const sX = chimneyX + chimneyW / 2 + Math.sin(smokeT + s) * 4;
+                const sR = 3 + sf2 * 7;
+                ctx.globalAlpha = sAlpha;
+                ctx.fillStyle = "#c8b8a8";
+                ctx.beginPath();
+                ctx.arc(sX, sY, sR, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
+            // --- Awning (striped canvas, over the door) ---
+            const awningX = sx + shopW * 0.18;
+            const awningW = shopW * 0.64;
+            const awningY = sy + shopH * 0.53;
+            const awningH2 = shopH * 0.10;
+            // Awning shape
+            ctx.fillStyle = "#c0392b";
+            ctx.beginPath();
+            ctx.moveTo(awningX, awningY);
+            ctx.lineTo(awningX + awningW, awningY);
+            ctx.lineTo(awningX + awningW + 6, awningY + awningH2);
+            ctx.lineTo(awningX - 6, awningY + awningH2);
+            ctx.closePath();
+            ctx.fill();
+            // Awning stripes
+            ctx.fillStyle = "#f0ede0";
+            const stripeW = awningW / 7;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(awningX, awningY);
+            ctx.lineTo(awningX + awningW, awningY);
+            ctx.lineTo(awningX + awningW + 6, awningY + awningH2);
+            ctx.lineTo(awningX - 6, awningY + awningH2);
+            ctx.closePath();
+            ctx.clip();
+            for (let i = 0; i < 7; i += 2) {
+                ctx.fillRect(awningX + i * stripeW, awningY, stripeW, awningH2 * 2);
+            }
+            ctx.restore();
+
+            // --- Door (arched, dark wood) ---
+            const doorW = shopW * 0.28;
+            const doorH = shopH * 0.35;
+            const doorX = sx + (shopW - doorW) / 2;
+            const doorY = groundY - doorH;
+            ctx.fillStyle = "#4a2e12";
+            ctx.beginPath();
+            ctx.moveTo(doorX, groundY);
+            ctx.lineTo(doorX, doorY + doorW / 2);
+            ctx.arc(doorX + doorW / 2, doorY + doorW / 2, doorW / 2, Math.PI, 0, false);
+            ctx.lineTo(doorX + doorW, groundY);
+            ctx.closePath();
+            ctx.fill();
+            // Door planks
+            ctx.strokeStyle = "#3a1e08";
+            ctx.lineWidth = 1.5;
+            for (let p = 1; p < 3; p++) {
+                ctx.beginPath();
+                ctx.moveTo(doorX + p * doorW / 3, doorY + doorW * 0.7);
+                ctx.lineTo(doorX + p * doorW / 3, groundY);
+                ctx.stroke();
+            }
+            // Door knob
             ctx.fillStyle = "#ffd35a";
-            ctx.font = "700 " + Math.floor(cell * 0.3) + "px system-ui, sans-serif";
+            ctx.beginPath();
+            ctx.arc(doorX + doorW * 0.72, doorY + doorH * 0.62, 3, 0, Math.PI * 2);
+            ctx.fill();
+
+            // --- Window (left of door) ---
+            const winX = sx + shopW * 0.10;
+            const winY = sy + shopH * 0.50;
+            const winW = shopW * 0.22;
+            const winH = shopH * 0.20;
+            // Frame
+            ctx.fillStyle = "#6b3a1a";
+            ctx.fillRect(winX, winY, winW, winH);
+            // Glass panes
+            ctx.fillStyle = "rgba(160,210,255,0.55)";
+            ctx.fillRect(winX + 3, winY + 3, winW / 2 - 4, winH - 6);
+            ctx.fillRect(winX + winW / 2 + 1, winY + 3, winW / 2 - 4, winH - 6);
+            // Cross divider
+            ctx.fillStyle = "#6b3a1a";
+            ctx.fillRect(winX + winW / 2 - 1.5, winY, 3, winH);
+            ctx.fillRect(winX, winY + winH / 2 - 1.5, winW, 3);
+            // Shutters
+            ctx.fillStyle = "#3f8a45";
+            ctx.fillRect(winX - winW * 0.22, winY, winW * 0.18, winH);
+            ctx.fillRect(winX + winW + winW * 0.04, winY, winW * 0.18, winH);
+            // Shutter slats
+            ctx.strokeStyle = "#2e6a34";
+            ctx.lineWidth = 1;
+            for (let sl = 1; sl < 4; sl++) {
+                const sly = winY + sl * winH / 4;
+                ctx.beginPath(); ctx.moveTo(winX - winW * 0.22, sly); ctx.lineTo(winX - winW * 0.04, sly); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(winX + winW + winW * 0.04, sly); ctx.lineTo(winX + winW + winW * 0.22, sly); ctx.stroke();
+            }
+
+            // --- Hanging sign ---
+            const signW = shopW * 0.55;
+            const signH = shopH * 0.14;
+            const signX = sx + (shopW - signW) / 2;
+            const signY = sy + shopH * 0.04;
+            // Chains
+            ctx.strokeStyle = "#a08040";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(signX + signW * 0.2, roofBaseY); ctx.lineTo(signX + signW * 0.2, signY);
+            ctx.moveTo(signX + signW * 0.8, roofBaseY); ctx.lineTo(signX + signW * 0.8, signY);
+            ctx.stroke();
+            // Sign board
+            ctx.fillStyle = "#8b5e2a";
+            roundRect(signX, signY, signW, signH, 4);
+            ctx.fillStyle = "#f0c060";
+            ctx.strokeStyle = "#a07030";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(signX + 3, signY + 3, signW - 6, signH - 6);
             ctx.textAlign = "center";
-            ctx.fillText("\u{1F6D2}", x + w / 2, y + h * 0.85);
-            shopBtnRect = { x: x, y: y, w: w, h: h + cell * 0.4 };
+            ctx.font = "700 " + Math.floor(signH * 0.62) + "px system-ui, sans-serif";
+            ctx.fillStyle = "#1a0a00";
+            ctx.fillText("🛒 SHOP", signX + signW / 2, signY + signH * 0.72);
+
+            // --- Lanterns either side of door ---
+            for (const lx of [doorX - 10, doorX + doorW + 6]) {
+                const lanternY = awningY + awningH2 + 4;
+                // Pole
+                ctx.strokeStyle = "#5a4020";
+                ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(lx + 4, lanternY); ctx.lineTo(lx + 4, lanternY + 14); ctx.stroke();
+                // Glow
+                const glow = ctx.createRadialGradient(lx + 4, lanternY + 8, 1, lx + 4, lanternY + 8, 10);
+                glow.addColorStop(0, "rgba(255,230,100,0.7)");
+                glow.addColorStop(1, "rgba(255,180,40,0)");
+                ctx.fillStyle = glow;
+                ctx.beginPath(); ctx.arc(lx + 4, lanternY + 8, 10, 0, Math.PI * 2); ctx.fill();
+                // Cage
+                ctx.fillStyle = "#ffd35a";
+                ctx.fillRect(lx, lanternY + 2, 8, 10);
+                ctx.strokeStyle = "#a08000";
+                ctx.lineWidth = 1;
+                ctx.strokeRect(lx, lanternY + 2, 8, 10);
+                ctx.beginPath(); ctx.moveTo(lx + 4, lanternY + 2); ctx.lineTo(lx + 4, lanternY + 12); ctx.stroke();
+            }
+
+            // --- Merchandise cart (left of shop) ---
+            const cartX = sx - cell * 0.95;
+            const cartY = groundY - cell * 0.62;
+            const cartW = cell * 0.80;
+            const cartH = cell * 0.48;
+            // Cart body
+            ctx.fillStyle = "#7a4a1a";
+            ctx.fillRect(cartX, cartY, cartW, cartH);
+            ctx.strokeStyle = "#5a3010";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(cartX, cartY, cartW, cartH);
+            // Cart slats
+            ctx.lineWidth = 1;
+            for (let s = 1; s < 3; s++) {
+                ctx.beginPath();
+                ctx.moveTo(cartX + s * cartW / 3, cartY);
+                ctx.lineTo(cartX + s * cartW / 3, cartY + cartH);
+                ctx.stroke();
+            }
+            // Wheels
+            for (const wx of [cartX + cartW * 0.22, cartX + cartW * 0.78]) {
+                ctx.fillStyle = "#5a3010";
+                ctx.beginPath(); ctx.arc(wx, groundY, cartH * 0.42, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = "#8b5a2a";
+                ctx.beginPath(); ctx.arc(wx, groundY, cartH * 0.25, 0, Math.PI * 2); ctx.fill();
+                // Spokes
+                ctx.strokeStyle = "#5a3010";
+                ctx.lineWidth = 1.5;
+                for (let sp = 0; sp < 4; sp++) {
+                    const ang = sp * Math.PI / 2;
+                    ctx.beginPath();
+                    ctx.moveTo(wx, groundY);
+                    ctx.lineTo(wx + Math.cos(ang) * cartH * 0.25, groundY + Math.sin(ang) * cartH * 0.25);
+                    ctx.stroke();
+                }
+            }
+            // Cart contents: gem icons
+            ctx.font = Math.floor(cell * 0.22) + "px system-ui, sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("💎⛏️🥇", cartX + cartW / 2, cartY + cartH * 0.6);
+
+            shopBtnRect = { x: sx - cell * 0.95, y: sy, w: shopW + cell * 0.95, h: shopH + cell * 0.4 };
         }
 
         function drawHUD() {
@@ -910,7 +1427,9 @@
             roundRect(cbx, cby, cbw, cbh, 10);
             ctx.fillStyle = "#fff";
             ctx.font = "700 15px system-ui, sans-serif";
-            ctx.fillText("⛏️ Back to digging", W / 2, cby + 26);
+            ctx.textBaseline = "middle";
+            ctx.fillText("⛏️ Back to digging", W / 2, cby + cbh / 2);
+            ctx.textBaseline = "alphabetic";
             shopCloseRect = { x: cbx, y: cby, w: cbw, h: cbh };
         }
         let shopCloseRect = null;
