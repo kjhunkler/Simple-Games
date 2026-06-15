@@ -162,7 +162,7 @@
                 key: "box", name: "Box", emoji: "\u{1F4E6}",
                 desc: () => "Solid crate, mine to recover (have " + boxes + ")",
                 consumable: true,
-                cost: () => 45,
+                cost: () => 10,
                 buy: () => { boxes += 1; }
             }
         ];
@@ -1560,7 +1560,7 @@
             const p = eventPos(e);
             if (e.cancelable) e.preventDefault();
             const dx = p.mx - drag.x, dy = p.my - drag.y;
-            const thresh = Math.max(8, cell * 0.25);
+            const thresh = Math.max(12, cell * 0.4);
             if (Math.abs(dx) < thresh && Math.abs(dy) < thresh) return;
             // Dig/move in the dominant swipe direction (4-dir).
             if (Math.abs(dx) >= Math.abs(dy)) requestDig(Math.sign(dx), 0);
