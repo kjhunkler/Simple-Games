@@ -12,7 +12,7 @@
         "snake", "astro", "piestack", "flappy", "moles", "memory",
         "echo", "bricks", "hopper", "fruit", "tiles", "colorrush",
         "beatloop", "taptiles", "stopspin", "lanedash", "stormquest", "sentry",
-        "bughunt"
+        "bughunt", "digger"
     ];
 
     const $ = (sel) => document.querySelector(sel);
