@@ -4,7 +4,8 @@
    from the shopkeeper. Better gear lets you dig deeper for richer loot.
 
    Controls
-     - Tap a tile next to the miner to dig / move into it.
+     - Swipe up/down/left/right to dig & move that way. Hold and drag to
+       keep digging in a direction.
      - WASD or arrow keys move & dig.
      - At the surface, tap the shop (or press the SHOP button) to upgrade.
    ========================================================= */
@@ -14,6 +15,13 @@
     const COLS = 9;                 // mine width
     const SURFACE_Y = 0;            // walkable ground row; y>0 is underground
     const SKY_ROWS = 2;            // rows of sky drawn above the surface
+
+    // Topsoil: the band just below the surface is always plain dirt (no rock
+    // or hazards) so the starting pickaxe can reach all of it. It is seeded
+    // with a guaranteed loot budget, so a player who clears it can always
+    // afford the first pickaxe (and then mine the rock beneath).
+    const TOPSOIL = 6;              // rows 1..TOPSOIL are guaranteed dirt
+    const STARTER_LOOT = 70;        // coins guaranteed reachable before any upgrade
 
     // Tile kinds. `hard` = dig power required to break it.
     const T = {
@@ -116,6 +124,8 @@
         function genTile(x, y) {
             if (x < 0 || x >= COLS) return { type: T.BEDROCK, hard: 99, loot: 0 };
             if (y <= SURFACE_Y) return { type: T.EMPTY, hard: 0, loot: 0 };
+            // Topsoil is plain dirt; seedTopsoil() fills in its guaranteed loot.
+            if (y <= TOPSOIL) return { type: T.DIRT, hard: 1, loot: 0 };
 
             const depth = y;
             const r = Math.random();
@@ -152,6 +162,32 @@
             return t;
         }
 
+        // Lay the topsoil as plain dirt and scatter a guaranteed loot budget
+        // across it, so the accessible (dig-1) dirt always holds enough coins
+        // to buy the first pickaxe — the gate that unlocks mining rock.
+        function seedTopsoil() {
+            const cells = [];
+            for (let y = 1; y <= TOPSOIL; y++) {
+                for (let x = 0; x < COLS; x++) {
+                    world.set(key(x, y), { type: T.DIRT, hard: 1, loot: 0 });
+                    cells.push({ x: x, y: y });
+                }
+            }
+            // Fisher–Yates shuffle so loot lands in random tiles each run.
+            for (let i = cells.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const tmp = cells[i]; cells[i] = cells[j]; cells[j] = tmp;
+            }
+            // Hand out the budget in coin/gold chunks across distinct tiles.
+            let budget = STARTER_LOOT, ci = 0;
+            while (budget > 0 && ci < cells.length) {
+                const c = cells[ci++];
+                const val = (budget >= LOOT.gold && Math.random() < 0.4) ? LOOT.gold : LOOT.coin;
+                world.get(key(c.x, c.y)).loot = val;
+                budget -= val;
+            }
+        }
+
         // ---------- Sizing ----------
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -170,6 +206,7 @@
         // ---------- Game state ----------
         function reset() {
             world.clear();
+            seedTopsoil();
             stats = baseStats();
             player = { x: Math.floor(COLS / 2), y: SURFACE_Y };
             carry = 0;
@@ -177,7 +214,7 @@
             depthBest = 0;
             mode = "play";          // "play" | "shop"
             shopRects = [];
-            msg = "Dig down! ↓";
+            msg = "Swipe to dig! ⬇️";
             msgT = 240;
             particles = [];
             camY = 0;
@@ -709,42 +746,52 @@
             return rect && mx >= rect.x && mx <= rect.x + rect.w && my >= rect.y && my <= rect.y + rect.h;
         }
 
-        function pointerAt(mx, my) {
-            // Shop layer first.
+        // Returns true if a tap at (mx,my) hit a UI control and was handled.
+        function uiTapAt(mx, my) {
             if (mode === "shop") {
-                if (hit(shopCloseRect, mx, my)) { closeShop(); return; }
+                if (hit(shopCloseRect, mx, my)) { closeShop(); return true; }
                 for (const r of shopRects) {
-                    if (hit(r, mx, my)) { buy(r.item); return; }
+                    if (hit(r, mx, my)) { buy(r.item); return true; }
                 }
-                return;
+                return true;   // swallow taps anywhere on the shop overlay
             }
+            if (hit(hudShopRect, mx, my)) { openShop(); return true; }
+            if (hit(shopBtnRect, mx, my) && player.y <= SURFACE_Y) { openShop(); return true; }
+            if (my < topPad) return true;   // ignore the HUD band
+            return false;
+        }
 
-            // HUD shop button.
-            if (hit(hudShopRect, mx, my)) { openShop(); return; }
-            // Shop building.
-            if (hit(shopBtnRect, mx, my) && player.y <= SURFACE_Y) { openShop(); return; }
+        let drag = null;   // active swipe-to-dig gesture anchor, or null
 
-            if (my < topPad) return;
-
-            // Translate to grid; move toward the tapped tile (one step).
-            const col = Math.floor((mx - offX) / cell);
-            const gridRow = Math.floor(camY + (my - topPad) / cell);
-            const dx = col - player.x;
-            const dy = gridRow - player.y;
-            if (dx === 0 && dy === 0) return;
-            // Step one tile in the dominant tapped direction (4-dir).
-            if (Math.abs(dx) >= Math.abs(dy)) tryMove(Math.sign(dx), 0);
-            else tryMove(0, Math.sign(dy));
+        function eventPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const pt = (e.touches && e.touches[0]) ||
+                (e.changedTouches && e.changedTouches[0]) || e;
+            return { mx: pt.clientX - rect.left, my: pt.clientY - rect.top };
         }
 
         function onPointerDown(e) {
-            const rect = canvas.getBoundingClientRect();
-            const pt = e.touches ? e.touches[0] : e;
-            const mx = pt.clientX - rect.left;
-            const my = pt.clientY - rect.top;
+            const p = eventPos(e);
             if (e.cancelable) e.preventDefault();
-            pointerAt(mx, my);
+            if (uiTapAt(p.mx, p.my)) { drag = null; return; }
+            drag = { x: p.mx, y: p.my };   // begin a swipe gesture
         }
+
+        function onPointerMove(e) {
+            if (!drag) return;
+            const p = eventPos(e);
+            if (e.cancelable) e.preventDefault();
+            const dx = p.mx - drag.x, dy = p.my - drag.y;
+            const thresh = Math.max(18, cell * 0.5);
+            if (Math.abs(dx) < thresh && Math.abs(dy) < thresh) return;
+            // Dig/move one tile in the dominant swipe direction (4-dir).
+            if (Math.abs(dx) >= Math.abs(dy)) tryMove(Math.sign(dx), 0);
+            else tryMove(0, Math.sign(dy));
+            // Re-anchor so a held drag keeps digging tile by tile.
+            drag = { x: p.mx, y: p.my };
+        }
+
+        function onPointerUp() { drag = null; }
 
         function onKey(e) {
             if (mode === "shop") {
@@ -775,7 +822,11 @@
                 reset();
                 window.addEventListener("resize", resize);
                 canvas.addEventListener("touchstart", onPointerDown, { passive: false });
+                canvas.addEventListener("touchmove", onPointerMove, { passive: false });
+                canvas.addEventListener("touchend", onPointerUp);
                 canvas.addEventListener("mousedown", onPointerDown);
+                window.addEventListener("mousemove", onPointerMove);
+                window.addEventListener("mouseup", onPointerUp);
                 window.addEventListener("keydown", onKey);
                 rafId = requestAnimationFrame(loop);
             },
@@ -786,7 +837,11 @@
                 cancelAnimationFrame(rafId);
                 window.removeEventListener("resize", resize);
                 canvas.removeEventListener("touchstart", onPointerDown);
+                canvas.removeEventListener("touchmove", onPointerMove);
+                canvas.removeEventListener("touchend", onPointerUp);
                 canvas.removeEventListener("mousedown", onPointerDown);
+                window.removeEventListener("mousemove", onPointerMove);
+                window.removeEventListener("mouseup", onPointerUp);
                 window.removeEventListener("keydown", onKey);
             }
         };
