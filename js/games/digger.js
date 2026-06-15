@@ -10,6 +10,8 @@
        climb a ladder. Gravity pulls you down off ledges, so for taller
        climbs place ladders: tap the 🪜 button (or press Space). Buy more
        at the shop.
+     - Place a box with the 📦 button (or press Q). Boxes land in front of
+       you, or beneath you if blocked. Mine them to get them back.
      - WASD or arrow keys move & dig.
      - At the surface, tap the shop (or press the SHOP button) to upgrade.
    ========================================================= */
@@ -36,10 +38,11 @@
         OBSID: 4,   // hard 4
         HAZARD: 5,  // gas pocket — hurts when dug
         LADDER: 6,  // placed by the player; the only way to climb up
+        BOX: 7,     // crate placed by the player; solid, minable to recover
         BEDROCK: 9  // walls at the edges, never breakable
     };
 
-    const HARD = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 1 };
+    const HARD = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 1, 7: 1 };
 
     // Base mining time per tile type (ms) using the starting (level-1) pickaxe.
     // Each pickaxe upgrade shaves time off; see digTimeFor().
@@ -48,7 +51,8 @@
         [T.ROCK]: 800,
         [T.DENSE]: 1100,
         [T.OBSID]: 1500,
-        [T.HAZARD]: 300
+        [T.HAZARD]: 300,
+        [T.BOX]: 350
     };
 
     // Treasure tiers carried inside a dug tile.
@@ -69,12 +73,13 @@
         let viewRows, viewCols;
         let camX, camY;   // camera in world-column / world-row (fractional)
         let rafId;
+        let facing = 1;   // last horizontal direction: 1=right, -1=left
         // offX / offY are pixel offsets; computed per-draw from camX/camY
         function offX() { return canvas.clientWidth / 2 - (camX + 0.5) * cell; }
 
         // World: sparse map of "x,y" -> { type, hard, loot }
         const world = new Map();
-        let player, stats, carry, banked, depthBest, mode, shopRects, msg, msgT, ladders;
+        let player, stats, carry, banked, depthBest, mode, shopRects, msg, msgT, ladders, boxes;
         let mining = null;        // tile being broken: { x, y, dx, dy, t, required }
         let heldDir = null;       // direction held (swipe-drag / key) for chained digging
         let dead = false;         // true after a game over
@@ -152,6 +157,13 @@
                 consumable: true,
                 cost: () => 20,
                 buy: () => { ladders += 5; }
+            },
+            {
+                key: "box", name: "Box", emoji: "\u{1F4E6}",
+                desc: () => "Solid crate, mine to recover (have " + boxes + ")",
+                consumable: true,
+                cost: () => 45,
+                buy: () => { boxes += 1; }
             }
         ];
 
@@ -262,6 +274,8 @@
             dead = false;
             lastTs = 0;
             ladders = kids ? 10 : 5;
+            boxes = kids ? 5 : 1;
+            facing = 1;
             host.setScore(0);
 
             // Surface scene animation init
@@ -309,6 +323,7 @@
         // instant; a solid tile starts a timed mine that finishes in update().
         function requestDig(dx, dy) {
             if (mode !== "play" || dead) return;
+            if (dx !== 0) facing = dx;
             heldDir = { dx: dx, dy: dy };
             if (!mining || mining.dx !== dx || mining.dy !== dy) beginStep(dx, dy);
         }
@@ -425,12 +440,62 @@
             setMsg("Ladder placed \u{1FA9C} (×" + ladders + ")", 70);
         }
 
+        // Place a crate in front of the player (same row, facing direction).
+        // Falls back to placing at the player's tile and moving them on top.
+        const noBoxMsg = "No boxes! Buy more at the shop";
+        function placeBox() {
+            if (mode !== "play" || dead) return;
+            if (boxes <= 0) {
+                SGSound.play("wrong"); host.vibrate(20);
+                setMsg(noBoxMsg, 110);
+                return;
+            }
+            const frontX = player.x + facing;
+            const frontY = player.y;
+
+            if (frontX >= 0 && frontX < COLS && tileAt(frontX, frontY).type === T.EMPTY) {
+                // Primary: place in front of player
+                world.set(key(frontX, frontY), { type: T.BOX, hard: 1, loot: 0 });
+                boxes--;
+                SGSound.play("drop"); host.vibrate(12);
+                spawnParticles(cx(frontX), cyRow(frontY), "#8b5e2a", 6);
+                setMsg("Box placed \u{1F4E6} (×" + boxes + ")", 70);
+            } else {
+                // Fallback: place at player's current tile and step up on top
+                const aboveY = player.y - 1;
+                if (aboveY > SURFACE_Y && tileAt(player.x, aboveY).type === T.EMPTY) {
+                    world.set(key(player.x, player.y), { type: T.BOX, hard: 1, loot: 0 });
+                    player.y = aboveY;  // step onto the box
+                    boxes--;
+                    SGSound.play("drop"); host.vibrate(12);
+                    spawnParticles(cx(player.x), cyRow(player.y + 1), "#8b5e2a", 6);
+                    setMsg("Box placed below \u{1F4E6} (×" + boxes + ")", 70);
+                } else {
+                    SGSound.play("wrong"); host.vibrate([20, 30, 20]);
+                    setMsg("No room for a box", 100);
+                }
+            }
+        }
+
         function breakTile(x, y, t) {
             stats.stam--;
             const cxp = cx(x), cyp = cyRow(y);
             // Step into the tile we broke, unless we mined straight overhead —
             // you don't rise into a dug ceiling; you jump up into it instead.
             const movesInto = y >= player.y;
+
+            // Box: recover to inventory instead of discarding
+            if (t.type === T.BOX) {
+                world.set(key(x, y), { type: T.EMPTY, hard: 0, loot: 0 });
+                boxes++;
+                SGSound.play("drop"); host.vibrate(10);
+                spawnParticles(cxp, cyp, "#8b5e2a", 6);
+                if (movesInto) { player.x = x; player.y = y; }
+                setMsg("Box recovered \u{1F4E6} (\u00d7" + boxes + ")", 90);
+                onEnter(player.x, player.y);
+                if (movesInto) settle();
+                return;
+            }
 
             if (t.type === T.HAZARD) {
                 world.set(key(x, y), { type: T.EMPTY, hard: 0, loot: 0 });
@@ -550,6 +615,7 @@
                 case T.OBSID: return "#2b2438";
                 case T.HAZARD: return "#3a7d4a";
                 case T.LADDER: return "#caa15a";
+                case T.BOX: return "#8b5e2a";
                 case T.BEDROCK: return "#15151f";
                 default: return "#1c1320";
             }
@@ -688,6 +754,8 @@
                         ctx.fillRect(x, y, cell + 1, cell + 1);
                     } else if (t.type === T.LADDER) {
                         drawLadderTile(x, y, light);
+                    } else if (t.type === T.BOX) {
+                        drawBoxTile(x, y, light);
                     } else {
                         ctx.fillStyle = shade(tileColor(t.type), light);
                         ctx.fillRect(x, y, cell + 1, cell + 1);
@@ -996,6 +1064,31 @@
                 const ry = y + cell * (0.18 + i * 0.32);
                 ctx.fillRect(lx, ry, (rx - lx) + railW, railW);
             }
+        }
+
+        function drawBoxTile(x, y, light) {
+            // Solid wooden crate with cross-brace and metal corner brackets.
+            ctx.fillStyle = shade("#8b5e2a", light);
+            ctx.fillRect(x, y, cell + 1, cell + 1);
+            // Outer border
+            const brd = Math.max(1.5, cell * 0.07);
+            ctx.fillStyle = shade("#5a3010", Math.max(0.4, light));
+            ctx.fillRect(x, y, cell + 1, brd);              // top
+            ctx.fillRect(x, y + cell - brd, cell + 1, brd); // bottom
+            ctx.fillRect(x, y, brd, cell + 1);              // left
+            ctx.fillRect(x + cell - brd, y, brd, cell + 1); // right
+            // Mid-slats
+            ctx.fillStyle = shade("#6b3f1a", Math.max(0.45, light));
+            const sl = Math.max(1, cell * 0.055);
+            ctx.fillRect(x, y + cell / 2 - sl / 2, cell + 1, sl); // horizontal
+            ctx.fillRect(x + cell / 2 - sl / 2, y, sl, cell + 1); // vertical
+            // Metal corner brackets
+            const cs = cell * 0.18;
+            ctx.fillStyle = shade("#8a8a9a", Math.max(0.5, light));
+            ctx.fillRect(x + 1, y + 1, cs, cs);
+            ctx.fillRect(x + cell - cs, y + 1, cs, cs);
+            ctx.fillRect(x + 1, y + cell - cs, cs, cs);
+            ctx.fillRect(x + cell - cs, y + cell - cs, cs, cs);
         }
 
         function drawMiner(px, py) {
@@ -1474,6 +1567,7 @@
                 return true;   // swallow taps anywhere on the shop overlay
             }
             if (hit(ladderBtnRect, mx, my)) { placeLadder(); return true; }
+            if (hit(boxBtnRect, mx, my)) { placeBox(); return true; }
             if (hit(hudShopRect, mx, my)) { openShop(); return true; }
             if (hit(shopBtnRect, mx, my) && player.y <= SURFACE_Y) { openShop(); return true; }
             if (my < topPad) return true;   // ignore the HUD band
@@ -1527,6 +1621,7 @@
             };
             if (e.key === "b" || e.key === "B") { e.preventDefault(); openShop(); return; }
             if (e.key === " " || e.key === "e" || e.key === "E") { e.preventDefault(); placeLadder(); return; }
+            if (e.key === "q" || e.key === "Q") { e.preventDefault(); placeBox(); return; }
             const m = map[e.key];
             if (m) { e.preventDefault(); requestDig(m[0], m[1]); }
         }
