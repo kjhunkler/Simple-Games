@@ -19,7 +19,7 @@
         let W, H, laneW;
         let player, things, dashes, scenery, sparks, score, coins, distance;
         let alive, started, lives, invuln;
-        let spawnTimer, speed;
+        let spawnTimer, speed, lastOpenLane;
         let rafId, lastTs;
         let touchStartX = 0, touchStartY = 0, touchMoved = false;
         const kids = !!host.kids;
@@ -63,6 +63,7 @@
             invuln = 0;
             spawnTimer = 0.4;
             speed = 300 * SPEED_SCALE;
+            lastOpenLane = 1;
             lastTs = 0;
             host.setScore(0);
         }
@@ -81,11 +82,26 @@
         }
 
         function spawnRow() {
-            const lanes = [0, 1, 2];
-            const obCount = Math.random() < Math.min(0.18 + distance / 4000, 0.5) ? 2 : 1;
-            for (let i = 0; i < obCount; i++) {
-                const li = Math.floor(Math.random() * lanes.length);
-                const lane = lanes.splice(li, 1)[0];
+            // Always keep one lane open, drifting it by at most one lane from
+            // the previous row so it stays reachable. Combined with uniform
+            // obstacle speed (rows never overlap into the same band), this
+            // guarantees the three lanes are never all blocked at once.
+            const openLane = Math.max(0, Math.min(LANES - 1,
+                lastOpenLane + (Math.floor(Math.random() * 3) - 1)));
+            lastOpenLane = openLane;
+
+            // Candidate lanes to block (everything but the open one), shuffled.
+            const blockable = [0, 1, 2].filter((l) => l !== openLane);
+            for (let i = blockable.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const tmp = blockable[i]; blockable[i] = blockable[j]; blockable[j] = tmp;
+            }
+            // Block one lane usually; both (max) more often as you speed up.
+            const blockBoth = Math.random() < Math.min(0.18 + distance / 4000, 0.6);
+            const count = blockBoth ? 2 : 1;
+
+            for (let i = 0; i < count; i++) {
+                const lane = blockable[i];
                 const kind = Math.random() < 0.18 ? "cone" : "car";
                 things.push({
                     lane: lane,
@@ -98,9 +114,9 @@
                     wob: Math.random() * Math.PI * 2
                 });
             }
-            if (lanes.length && Math.random() < 0.45) {
-                const lane = lanes[Math.floor(Math.random() * lanes.length)];
-                things.push({ lane: lane, y: -60, coin: true, w: 30, h: 30, spin: 0 });
+            // Sometimes drop a star in the open lane to reward staying on path.
+            if (Math.random() < 0.45) {
+                things.push({ lane: openLane, y: -60, coin: true, w: 30, h: 30, spin: 0 });
             }
         }
 
@@ -182,7 +198,7 @@
             const py = H - 110;
             for (let i = things.length - 1; i >= 0; i--) {
                 const t = things[i];
-                t.y += speed * dt * (t.kind === "car" ? 0.82 : 1); // cars drive forward a bit
+                t.y += speed * dt; // uniform speed keeps rows spaced so a path always exists
                 if (t.coin) t.spin += dt * 5;
                 if (t.wob !== undefined) t.wob += dt * 3;
 
