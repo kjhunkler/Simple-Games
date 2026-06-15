@@ -6,8 +6,10 @@
    Controls
      - Swipe up/down/left/right to dig & move that way. Hold and drag to
        keep digging in a direction.
-     - You can only climb UP on ladders. Tap the 🪜 button (or press Space)
-       to place one; on a ladder it extends straight up. Buy more at the shop.
+     - Swipe up to jump a single block, mine the block right overhead, or
+       climb a ladder. Gravity pulls you down off ledges, so for taller
+       climbs place ladders: tap the 🪜 button (or press Space). Buy more
+       at the shop.
      - WASD or arrow keys move & dig.
      - At the surface, tap the shop (or press the SHOP button) to upgrade.
    ========================================================= */
@@ -298,25 +300,37 @@
 
             const t = tileAt(nx, ny);
 
-            // Climbing up underground is only possible on a ladder.
             if (dy < 0) {
+                // Going up: climb a ladder, hop a single block, or mine the
+                // block directly overhead (falls through to the dig code).
                 if (t.type === T.LADDER) {
                     player.x = nx; player.y = ny;
                     SGSound.play("flip");
                     onEnter(nx, ny);
-                } else {
-                    if (msg !== climbMsg || msgT <= 0) SGSound.play("wrong");
-                    setMsg(climbMsg, 90);
+                    return;
                 }
+                if (t.type === T.EMPTY) {
+                    // Jump one block — only with solid footing to push off.
+                    if (hasFooting()) {
+                        player.x = nx; player.y = ny;
+                        SGSound.play("jump"); host.vibrate(8);
+                        onEnter(nx, ny);
+                    } else {
+                        if (msg !== climbMsg || msgT <= 0) SGSound.play("wrong");
+                        setMsg(climbMsg, 90);
+                    }
+                    return;
+                }
+                // Solid overhead → fall through and mine it (see below).
+            } else if (t.type === T.EMPTY || t.type === T.LADDER) {
+                // Down / sideways: walk through dug space and ladders freely,
+                // then let gravity pull us down if we stepped into open air.
+                player.x = nx; player.y = ny;
+                onEnter(nx, ny);
+                settle();
                 return;
             }
 
-            // Down / sideways: walk through dug space and ladders freely.
-            if (t.type === T.EMPTY || t.type === T.LADDER) {
-                player.x = nx; player.y = ny;
-                onEnter(nx, ny);
-                return;
-            }
             if (t.type === T.BEDROCK) { SGSound.play("wrong"); return; }
             if (stats.stam <= 0) {
                 setMsg("Out of stamina — head up! ↑", 120);
@@ -331,6 +345,31 @@
             }
             // Start chipping away; update() finishes it after `required` ms.
             mining = { x: nx, y: ny, dx: dx, dy: dy, t: 0, required: digTimeFor(t.type) };
+        }
+
+        // Solid ground (or a ladder) directly below to push off when jumping.
+        function hasFooting() {
+            return tileAt(player.x, player.y + 1).type !== T.EMPTY;
+        }
+
+        // Gravity: if the miner is in open air (not on a ladder, nothing solid
+        // below), drop straight down until something catches them.
+        function settle() {
+            let fell = 0;
+            while (player.y > SURFACE_Y &&
+                tileAt(player.x, player.y).type !== T.LADDER &&
+                tileAt(player.x, player.y + 1).type === T.EMPTY) {
+                player.y++;
+                fell++;
+            }
+            if (fell > 0) {
+                onEnter(player.x, player.y);
+                if (fell >= 2) {
+                    SGSound.play("drop");
+                    host.vibrate(12);
+                    spawnParticles(cx(player.x), cyRow(player.y), "#7a4a28", 6);
+                }
+            }
         }
 
         // Place a ladder to build a climb path. It drops into the first empty
@@ -362,11 +401,14 @@
         function breakTile(x, y, t) {
             stats.stam--;
             const cxp = cx(x), cyp = cyRow(y);
+            // Step into the tile we broke, unless we mined straight overhead —
+            // you don't rise into a dug ceiling; you jump up into it instead.
+            const movesInto = y >= player.y;
 
             if (t.type === T.HAZARD) {
                 world.set(key(x, y), { type: T.EMPTY, hard: 0, loot: 0 });
                 spawnParticles(cxp, cyp, "#7CFF9E", 14);
-                player.x = x; player.y = y;
+                if (movesInto) { player.x = x; player.y = y; }
                 damage(1, "Gas pocket! −❤️");
                 return;
             }
@@ -376,10 +418,11 @@
             SGSound.play("drop");
             host.vibrate(10);
             spawnParticles(cxp, cyp, tileColor(t.type), 6);
-            player.x = x; player.y = y;
+            if (movesInto) { player.x = x; player.y = y; }
 
             if (loot > 0) collect(loot, cxp, cyp);
-            onEnter(x, y);
+            onEnter(player.x, player.y);
+            if (movesInto) settle();
         }
 
         function collect(value, px, py) {
