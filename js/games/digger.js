@@ -332,6 +332,21 @@
             if (!mining || mining.dx !== dx || mining.dy !== dy) beginStep(dx, dy);
         }
 
+        // Is the tile at (x, y) something the miner can stand in / pass through?
+        function isOpen(x, y) {
+            if (x < 0 || x >= COLS) return false;
+            const t = tileAt(x, y);
+            return t.type === T.EMPTY || t.type === T.LADDER;
+        }
+
+        // A diagonal step is only allowed when at least one of the two orthogonal
+        // tiles it passes between is open. Otherwise the miner would squeeze
+        // through a solid corner — i.e. teleport through a wall — which we forbid.
+        function diagClear(dx, dy) {
+            if (dx === 0 || dy === 0) return true;   // not a diagonal
+            return isOpen(player.x + dx, player.y) || isOpen(player.x, player.y + dy);
+        }
+
         function beginStep(dx, dy) {
             mining = null;
             const nx = player.x + dx, ny = player.y + dy;
@@ -346,9 +361,34 @@
 
             const t = tileAt(nx, ny);
 
+            // Straight up into an already-dug ceiling: instead of bobbing up and
+            // falling straight back, reach up and mine the block two above the
+            // head — carving headroom for ladders or a staircase. Skipped while
+            // climbing a ladder so ascending still works.
+            if (dx === 0 && dy === -1 && t.type === T.EMPTY &&
+                tileAt(player.x, player.y).type !== T.LADDER) {
+                const ry = ny - 1;                  // two rows above the head
+                if (ry > SURFACE_Y && !isOpen(nx, ry)) tryStartMine(nx, ry, 0, -1);
+                return;
+            }
+
+            // Diagonal into a sealed corner (both orthogonal neighbours solid):
+            // don't squeeze through the corner. Dig the vertical neighbour first
+            // — headroom when climbing, floor when descending — so the move
+            // becomes a real step (a dug staircase) and never a teleport through
+            // the wall. The next held step then takes the now-clear diagonal.
+            // Pass the diagonal dx/dy so the held-dig guard keeps matching and a
+            // wiggling finger doesn't restart the dig.
+            if (dx !== 0 && dy !== 0 && !diagClear(dx, dy)) {
+                tryStartMine(player.x, ny, dx, dy);
+                return;
+            }
+
             if (t.type === T.EMPTY || t.type === T.LADDER) {
                 // Walk (any direction, including diagonally up) through dug space
-                // and ladders; gravity then pulls us down if we stepped into air.
+                // and ladders; the sealed-corner case above has already been
+                // handled, so any diagonal reaching here has room to pass.
+                // Gravity then pulls us down if we stepped into air.
                 player.x = nx; player.y = ny;
                 onEnter(nx, ny);
                 settle();
@@ -469,7 +509,14 @@
             // you don't rise into a dug ceiling. Diagonally-up counts as a step,
             // so you can climb a staircase; gravity (settle) pulls you back if
             // there's no footing under the new tile.
-            const movesInto = !(x === player.x && y < player.y);
+            const sdx = x - player.x, sdy = y - player.y;
+            let movesInto = !(sdx === 0 && sdy < 0);
+            // Refuse to slide into a diagonal block when both orthogonal
+            // neighbours are solid — that would teleport the miner through a
+            // wall corner. They still break the block, just don't move into it.
+            if (movesInto && sdx !== 0 && sdy !== 0 && !diagClear(sdx, sdy)) {
+                movesInto = false;
+            }
 
             // Box: recover to inventory instead of discarding
             if (t.type === T.BOX) {
