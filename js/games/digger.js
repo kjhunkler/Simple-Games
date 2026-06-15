@@ -7,10 +7,12 @@
      - Swipe up/down/left/right to dig & move that way. Hold and drag to
        keep digging in a direction.
      - Swipe up to climb a ladder or mine the block directly overhead. With
-       open space above and solid footing, you hop up and reach to mine the
-       block two rows up — that chip is held for ~1s, so repeated hops finish
-       it. Gravity pulls you down off ledges, so for taller climbs place
-       ladders: tap the 🪜 button (or press Space). Buy more at the shop.
+       open space above and solid footing, you hop: if there's a block one
+       step up in the way you're facing, you jump up-and-over onto it;
+       otherwise you hop in place and reach to mine the block two rows up —
+       that chip is held for ~1s, so repeated hops finish it. Gravity pulls
+       you down off ledges, so for taller climbs place ladders: tap the 🪜
+       button (or press Space). Buy more at the shop.
      - Place a box with the 📦 button (or press Q). Boxes land in front of
        you, or beneath you if blocked. Mine them to get them back.
      - WASD or arrow keys move & dig.
@@ -86,6 +88,7 @@
         let heldDir = null;       // direction held (swipe-drag / key) for chained digging
         let prevY = 0;            // player.y on the previous onEnter, to detect surfacing
         let jumpAnim = 0;         // seconds left of the visual hop animation (0 = grounded)
+        let jumpFrom = null;      // grid cell {x,y} the current hop launched from, for the arc
         const JUMP_DUR = 0.42;    // length of the up-and-down hop, in seconds
         const MINE_RETAIN = 1000; // ms a reach-mine (block two above) keeps its progress while idle
         let dead = false;         // true after a game over
@@ -279,6 +282,7 @@
             heldDir = null;
             prevY = SURFACE_Y;
             jumpAnim = 0;
+            jumpFrom = null;
             dead = false;
             lastTs = 0;
             ladders = kids ? 10 : 5;
@@ -365,8 +369,8 @@
         }
 
         // Upward input: climb a ladder, step out onto the surface, mine a solid
-        // block directly overhead, or — when there's open space above and solid
-        // footing below — hop in place and reach up to mine the block two rows up.
+        // block directly overhead, jump up-and-over onto an adjacent ledge in the
+        // facing direction, or hop in place and reach up to mine the block 2 rows up.
         function stepUp() {
             const nx = player.x, ny = player.y - 1;
             if (ny < SURFACE_Y) return;             // already at the surface
@@ -387,15 +391,26 @@
             }
 
             if (t.type === T.EMPTY) {
-                // Open space overhead: hop (needs footing to push off) and,
-                // while airborne, reach up to chip the block two rows above.
+                // Open space overhead. Need solid footing to push off.
                 if (!hasFooting()) {
                     if (msg !== climbMsg || msgT <= 0) SGSound.play("wrong");
                     setMsg(climbMsg, 90);
                     return;
                 }
-                if (jumpAnim <= 0) { SGSound.play("jump"); host.vibrate(8); }
-                jumpAnim = JUMP_DUR;                 // (re)start the visual hop
+                // Ledge-jump: hop up-and-over onto an adjacent block one level
+                // up in the facing direction, when there's room to land on it.
+                const lx = player.x + facing, ly = player.y - 1;
+                if (lx >= 0 && lx < COLS && ly > SURFACE_Y &&
+                    tileAt(lx, ly).type === T.EMPTY &&            // space to land in
+                    tileAt(lx, ly + 1).type !== T.EMPTY) {       // solid ledge under it
+                    startHop(player.x, player.y);
+                    player.x = lx; player.y = ly;
+                    onEnter(lx, ly);
+                    settle();
+                    return;
+                }
+                // Otherwise hop in place and reach up to chip the block 2 rows up.
+                startHop(player.x, player.y);
                 reachMine();
                 return;
             }
@@ -404,6 +419,13 @@
             // any in-progress chip on this same tile so it isn't reset.
             if (mining && mining.x === nx && mining.y === ny) return;
             tryStartMine(nx, ny, 0, -1, false);
+        }
+
+        // Kick off (or refresh) the visual hop arc from a launch cell.
+        function startHop(fx, fy) {
+            if (jumpAnim <= 0) { SGSound.play("jump"); host.vibrate(8); }
+            jumpFrom = { x: fx, y: fy };
+            jumpAnim = JUMP_DUR;
         }
 
         // Chip the block two rows above while hopping. Re-triggering on the same
@@ -719,7 +741,10 @@
 
             if (flash > 0) flash--;
             if (msgT > 0) msgT--;
-            if (jumpAnim > 0) jumpAnim = Math.max(0, jumpAnim - dt);
+            if (jumpAnim > 0) {
+                jumpAnim = Math.max(0, jumpAnim - dt);
+                if (jumpAnim === 0) jumpFrom = null;   // hop finished, drop the arc origin
+            }
 
             for (let i = particles.length - 1; i >= 0; i--) {
                 const p = particles[i];
@@ -1110,10 +1135,16 @@
 
         function drawMiner(px, py) {
             const r = cell * 0.34;
-            // Visual hop: rise then fall along a sine arc over JUMP_DUR. Peaks
-            // near a full cell so the miner reaches up toward the block 2 above.
+            // Visual hop: arc from the launch cell to the current cell, rising
+            // then falling over JUMP_DUR. A ledge-jump moves across cells, so we
+            // lerp the horizontal/vertical origin too; an in-place hop just lifts.
             if (jumpAnim > 0) {
                 const phase = 1 - jumpAnim / JUMP_DUR;     // 0 → 1 across the hop
+                if (jumpFrom) {
+                    const fx = cx(jumpFrom.x), fy = cyRow(jumpFrom.y);
+                    px += (fx - px) * (1 - phase);
+                    py += (fy - py) * (1 - phase);
+                }
                 py -= Math.sin(phase * Math.PI) * cell * 0.95;
             }
             // body
