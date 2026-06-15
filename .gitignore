@@ -4,5 +4,7 @@
 
 /.vs
 
-# Bug Hunt multiplayer server (run locally, not part of the static app)
-/server/
+# Bug Hunt multiplayer server: ship the code, but never the secrets/build cruft.
+/server/cert.pem
+/server/key.pem
+/server/__pycache__/
