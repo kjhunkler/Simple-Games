@@ -1542,7 +1542,7 @@
             const p = eventPos(e);
             if (e.cancelable) e.preventDefault();
             const dx = p.mx - drag.x, dy = p.my - drag.y;
-            const thresh = Math.max(18, cell * 0.5);
+            const thresh = Math.max(8, cell * 0.25);
             if (Math.abs(dx) < thresh && Math.abs(dy) < thresh) return;
             // Dig/move in the dominant swipe direction (4-dir).
             if (Math.abs(dx) >= Math.abs(dy)) requestDig(Math.sign(dx), 0);
@@ -1590,8 +1590,9 @@
                 reset();
                 window.addEventListener("resize", resize);
                 canvas.addEventListener("touchstart", onPointerDown, { passive: false });
-                canvas.addEventListener("touchmove", onPointerMove, { passive: false });
-                canvas.addEventListener("touchend", onPointerUp);
+                window.addEventListener("touchmove", onPointerMove, { passive: false });
+                window.addEventListener("touchend", onPointerUp);
+                window.addEventListener("touchcancel", onPointerUp);
                 canvas.addEventListener("mousedown", onPointerDown);
                 window.addEventListener("mousemove", onPointerMove);
                 window.addEventListener("mouseup", onPointerUp);
@@ -1606,8 +1607,9 @@
                 cancelAnimationFrame(rafId);
                 window.removeEventListener("resize", resize);
                 canvas.removeEventListener("touchstart", onPointerDown);
-                canvas.removeEventListener("touchmove", onPointerMove);
-                canvas.removeEventListener("touchend", onPointerUp);
+                window.removeEventListener("touchmove", onPointerMove);
+                window.removeEventListener("touchend", onPointerUp);
+                window.removeEventListener("touchcancel", onPointerUp);
                 canvas.removeEventListener("mousedown", onPointerDown);
                 window.removeEventListener("mousemove", onPointerMove);
                 window.removeEventListener("mouseup", onPointerUp);
