@@ -6,14 +6,16 @@
    Controls
      - Swipe up/down/left/right to dig & move that way. Hold and drag to
        keep digging in a direction.
-     - Swipe up to jump a single block, mine the block right overhead, or
-       climb a ladder. Gravity pulls you down off ledges, so for taller
-       climbs place ladders: tap the 🪜 button (or press Space). Buy more
-       at the shop.
+     - Swipe up to climb a ladder or mine the block directly overhead. With
+       open space above and solid footing, you hop up and reach to mine the
+       block two rows up — that chip is held for ~1s, so repeated hops finish
+       it. Gravity pulls you down off ledges, so for taller climbs place
+       ladders: tap the 🪜 button (or press Space). Buy more at the shop.
      - Place a box with the 📦 button (or press Q). Boxes land in front of
        you, or beneath you if blocked. Mine them to get them back.
      - WASD or arrow keys move & dig.
-     - At the surface, tap the shop (or press the SHOP button) to upgrade.
+     - The shop opens automatically when you climb back to the surface; tap
+       the shop (or press the SHOP button) to open it any time at the top.
    ========================================================= */
 (function () {
     "use strict";
@@ -82,6 +84,10 @@
         let player, stats, carry, banked, depthBest, mode, shopRects, msg, msgT, ladders, boxes;
         let mining = null;        // tile being broken: { x, y, dx, dy, t, required }
         let heldDir = null;       // direction held (swipe-drag / key) for chained digging
+        let prevY = 0;            // player.y on the previous onEnter, to detect surfacing
+        let jumpAnim = 0;         // seconds left of the visual hop animation (0 = grounded)
+        const JUMP_DUR = 0.42;    // length of the up-and-down hop, in seconds
+        const MINE_RETAIN = 1000; // ms a reach-mine (block two above) keeps its progress while idle
         let dead = false;         // true after a game over
         let lastTs = 0;           // last frame timestamp (ms) for real-time mining
         let flash = 0;            // damage flash timer
@@ -120,21 +126,21 @@
                 key: "dig", name: "Pickaxe", emoji: "⛏️",
                 desc: () => "Break tier-" + (stats.dig + 1) + " rock",
                 max: 3, lvl: () => stats.digLvl,
-                cost: () => [25, 40, 240][stats.digLvl],
+                cost: () => [25, 40, 100][stats.digLvl],
                 buy: () => { stats.digLvl++; stats.dig++; }
             },
             {
                 key: "lamp", name: "Lantern", emoji: "\u{1F3EE}",
                 desc: () => "See further underground",
                 max: 4, lvl: () => stats.lamp,
-                cost: () => [25, 70, 150, 280][stats.lamp],
+                cost: () => [25, 25, 25, 50][stats.lamp],
                 buy: () => { stats.lamp++; }
             },
             {
                 key: "stam", name: "Battery", emoji: "\u{1F50B}",
                 desc: () => "+10 max stamina",
                 max: 4, lvl: () => stats.stamLvl,
-                cost: () => [30, 80, 170, 320][stats.stamLvl],
+                cost: () => [30, 30, 50, 70][stats.stamLvl],
                 buy: () => { stats.stamLvl++; }
             },
             {
@@ -271,6 +277,8 @@
             camY = 0;
             mining = null;
             heldDir = null;
+            prevY = SURFACE_Y;
+            jumpAnim = 0;
             dead = false;
             lastTs = 0;
             ladders = kids ? 10 : 5;
@@ -325,6 +333,7 @@
             if (mode !== "play" || dead) return;
             if (dx !== 0) facing = dx;
             heldDir = { dx: dx, dy: dy };
+            if (dy < 0) { stepUp(); return; }   // up: climb / hop / reach-mine
             if (!mining || mining.dx !== dx || mining.dy !== dy) beginStep(dx, dy);
         }
 
@@ -342,29 +351,7 @@
 
             const t = tileAt(nx, ny);
 
-            if (dy < 0) {
-                // Going up: climb a ladder, hop a single block, or mine the
-                // block directly overhead (falls through to the dig code).
-                if (t.type === T.LADDER) {
-                    player.x = nx; player.y = ny;
-                    SGSound.play("flip");
-                    onEnter(nx, ny);
-                    return;
-                }
-                if (t.type === T.EMPTY) {
-                    // Jump one block — only with solid footing to push off.
-                    if (hasFooting()) {
-                        player.x = nx; player.y = ny;
-                        SGSound.play("jump"); host.vibrate(8);
-                        onEnter(nx, ny);
-                    } else {
-                        if (msg !== climbMsg || msgT <= 0) SGSound.play("wrong");
-                        setMsg(climbMsg, 90);
-                    }
-                    return;
-                }
-                // Solid overhead → fall through and mine it (see below).
-            } else if (t.type === T.EMPTY || t.type === T.LADDER) {
+            if (t.type === T.EMPTY || t.type === T.LADDER) {
                 // Down / sideways: walk through dug space and ladders freely,
                 // then let gravity pull us down if we stepped into open air.
                 player.x = nx; player.y = ny;
@@ -373,6 +360,70 @@
                 return;
             }
 
+            // Solid tile in a down/side direction → start chipping it.
+            tryStartMine(nx, ny, dx, dy, false);
+        }
+
+        // Upward input: climb a ladder, step out onto the surface, mine a solid
+        // block directly overhead, or — when there's open space above and solid
+        // footing below — hop in place and reach up to mine the block two rows up.
+        function stepUp() {
+            const nx = player.x, ny = player.y - 1;
+            if (ny < SURFACE_Y) return;             // already at the surface
+
+            if (ny <= SURFACE_Y) {                  // climb out onto the surface
+                player.x = nx; player.y = ny;
+                onEnter(nx, ny);
+                return;
+            }
+
+            const t = tileAt(nx, ny);
+
+            if (t.type === T.LADDER) {              // climb the ladder up
+                player.x = nx; player.y = ny;
+                SGSound.play("flip");
+                onEnter(nx, ny);
+                return;
+            }
+
+            if (t.type === T.EMPTY) {
+                // Open space overhead: hop (needs footing to push off) and,
+                // while airborne, reach up to chip the block two rows above.
+                if (!hasFooting()) {
+                    if (msg !== climbMsg || msgT <= 0) SGSound.play("wrong");
+                    setMsg(climbMsg, 90);
+                    return;
+                }
+                if (jumpAnim <= 0) { SGSound.play("jump"); host.vibrate(8); }
+                jumpAnim = JUMP_DUR;                 // (re)start the visual hop
+                reachMine();
+                return;
+            }
+
+            // Solid block directly overhead → mine it normally (no hop). Keep
+            // any in-progress chip on this same tile so it isn't reset.
+            if (mining && mining.x === nx && mining.y === ny) return;
+            tryStartMine(nx, ny, 0, -1, false);
+        }
+
+        // Chip the block two rows above while hopping. Re-triggering on the same
+        // tile preserves its progress (the retention is handled in update()).
+        function reachMine() {
+            const tx = player.x, ty = player.y - 2;
+            if (ty < SURFACE_Y) return;             // nothing that high to mine
+            const t = tileAt(tx, ty);
+            if (t.type === T.EMPTY || t.type === T.LADDER) return;   // nothing solid
+            if (mining && mining.reach && mining.x === tx && mining.y === ty) {
+                mining.idle = 0;                    // keep chipping the same tile
+                return;
+            }
+            tryStartMine(tx, ty, 0, -1, true);
+        }
+
+        // Shared guard + mine starter for solid tiles. Refuses (with feedback)
+        // on bedrock, no stamina, or rock harder than the current pickaxe.
+        function tryStartMine(nx, ny, dx, dy, reach) {
+            const t = tileAt(nx, ny);
             if (t.type === T.BEDROCK) { SGSound.play("wrong"); return; }
             if (stats.stam <= 0) {
                 setMsg("Out of stamina — head up! ↑", 120);
@@ -386,7 +437,7 @@
                 return;
             }
             // Start chipping away; update() finishes it after `required` ms.
-            mining = { x: nx, y: ny, dx: dx, dy: dy, t: 0, required: digTimeFor(t.type) };
+            mining = { x: nx, y: ny, dx: dx, dy: dy, t: 0, required: digTimeFor(t.type), reach: !!reach, idle: 0 };
         }
 
         // Solid ground (or a ladder) directly below to push off when jumping.
@@ -537,7 +588,13 @@
 
         function onEnter(x, y) {
             if (y > depthBest) depthBest = y;
-            if (y <= SURFACE_Y) arriveSurface();
+            if (y <= SURFACE_Y) {
+                const cameUpFromBelow = prevY > SURFACE_Y;
+                arriveSurface();
+                // Pop the shop open automatically when we climb back up.
+                if (cameUpFromBelow && mode === "play" && !dead) openShop();
+            }
+            prevY = y;
         }
 
         function arriveSurface() {
@@ -627,7 +684,14 @@
                 const t = tileAt(mining.x, mining.y);
                 if (t.type === T.EMPTY || stats.stam <= 0) {
                     mining = null;                  // tile gone or no stamina left
+                } else if (mining.reach && jumpAnim <= 0) {
+                    // Reach-mine (the block two above): only chips mid-hop. Once
+                    // the miner lands, hold the progress for MINE_RETAIN before
+                    // forgetting it, so repeated jumps can finish the block.
+                    mining.idle += dt * 1000;
+                    if (mining.idle >= MINE_RETAIN) mining = null;
                 } else {
+                    if (mining.reach) mining.idle = 0;   // reaching up: keep chipping
                     mining.t += dt * 1000;
                     if (Math.random() < dt * 14) {
                         spawnParticles(cx(mining.x), cyRow(mining.y), tileColor(t.type), 2);
@@ -636,7 +700,10 @@
                         breakTile(mining.x, mining.y, t);
                         mining = null;
                         // Keep digging while a direction is held down.
-                        if (!dead && heldDir) beginStep(heldDir.dx, heldDir.dy);
+                        if (!dead && heldDir) {
+                            if (heldDir.dy < 0) stepUp();
+                            else beginStep(heldDir.dx, heldDir.dy);
+                        }
                     }
                 }
             }
@@ -652,6 +719,7 @@
 
             if (flash > 0) flash--;
             if (msgT > 0) msgT--;
+            if (jumpAnim > 0) jumpAnim = Math.max(0, jumpAnim - dt);
 
             for (let i = particles.length - 1; i >= 0; i--) {
                 const p = particles[i];
@@ -801,8 +869,9 @@
                 ctx.fillRect(bx, by, bw * prog, bh);
             }
 
-            // Surface scenery: rare creatures above ground
-            drawSurfaceCreatures();
+            // Surface scenery: rare creatures, only while the sky is on-screen
+            // (never underground — the bird stays up by the shop).
+            if (groundY > topPad) drawSurfaceCreatures();
 
             // Shop building on the surface (top-right corner of the mine).
             drawShopBuilding();
@@ -1041,6 +1110,12 @@
 
         function drawMiner(px, py) {
             const r = cell * 0.34;
+            // Visual hop: rise then fall along a sine arc over JUMP_DUR. Peaks
+            // near a full cell so the miner reaches up toward the block 2 above.
+            if (jumpAnim > 0) {
+                const phase = 1 - jumpAnim / JUMP_DUR;     // 0 → 1 across the hop
+                py -= Math.sin(phase * Math.PI) * cell * 0.95;
+            }
             // body
             ctx.fillStyle = "#3b7bd6";
             roundRect(px - r, py - r * 0.2, r * 2, r * 1.5, r * 0.4);
