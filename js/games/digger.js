@@ -64,6 +64,11 @@
         diamond: 60
     };
 
+    // Brief pause (ms) after stepping into open space before a mine can start,
+    // so breaking into a cavern doesn't instantly chew the far wall — and the
+    // player gets a beat to change direction (e.g. swing into a diagonal climb).
+    const ENTER_DELAY_MS = 160;
+
     function create(host) {
         const canvas = host.canvas;
         const ctx = canvas.getContext("2d");
@@ -87,6 +92,7 @@
         let dead = false;         // true after a game over
         let lastTs = 0;           // last frame timestamp (ms) for real-time mining
         let flash = 0;            // damage flash timer
+        let moveLock = 0;         // ms before a mine may start after stepping into open space
         let particles = [];
         const noLadderMsg = "No ladders! Buy more at the shop";
 
@@ -272,6 +278,7 @@
             camY = 0;
             mining = null;
             heldDir = null;
+            moveLock = 0;
             heldKeys.clear();
             prevY = SURFACE_Y;
             dead = false;
@@ -339,12 +346,15 @@
             return t.type === T.EMPTY || t.type === T.LADDER;
         }
 
-        // A diagonal step is only allowed when at least one of the two orthogonal
-        // tiles it passes between is open. Otherwise the miner would squeeze
-        // through a solid corner — i.e. teleport through a wall — which we forbid.
+        // Diagonal moves are gated so the miner never squeezes through a solid
+        // corner (a teleport through the wall). Climbing diagonally needs
+        // headroom — the tile directly above the player must be open — while
+        // dropping diagonally needs the tile directly above the target open, so
+        // the miner slides into it instead of cutting across the sealed corner.
         function diagClear(dx, dy) {
             if (dx === 0 || dy === 0) return true;   // not a diagonal
-            return isOpen(player.x + dx, player.y) || isOpen(player.x, player.y + dy);
+            if (dy < 0) return isOpen(player.x, player.y + dy);   // up: tile above the player
+            return isOpen(player.x + dx, player.y);              // down: tile above the target
         }
 
         function beginStep(dx, dy) {
@@ -372,13 +382,14 @@
                 return;
             }
 
-            // Diagonal into a sealed corner (both orthogonal neighbours solid):
+            // Diagonal blocked by the corner rule (climbing needs the tile above
+            // the player open; descending needs the tile above the target open):
             // don't squeeze through the corner. Dig the vertical neighbour first
-            // — headroom when climbing, floor when descending — so the move
-            // becomes a real step (a dug staircase) and never a teleport through
-            // the wall. The next held step then takes the now-clear diagonal.
-            // Pass the diagonal dx/dy so the held-dig guard keeps matching and a
-            // wiggling finger doesn't restart the dig.
+            // — the headroom directly above the head when climbing (which is the
+            // very tile the climb rule needs cleared, so the next held step takes
+            // the now-open diagonal), or straight down when descending. Pass the
+            // diagonal dx/dy so the held-dig guard keeps matching and a wiggling
+            // finger doesn't restart the dig.
             if (dx !== 0 && dy !== 0 && !diagClear(dx, dy)) {
                 tryStartMine(player.x, ny, dx, dy);
                 return;
@@ -392,6 +403,9 @@
                 player.x = nx; player.y = ny;
                 onEnter(nx, ny);
                 settle();
+                // Pause mining briefly so running into open space doesn't
+                // instantly chew the next tile — and leaves a beat to turn.
+                moveLock = ENTER_DELAY_MS;
                 return;
             }
 
@@ -402,6 +416,7 @@
         // Shared guard + mine starter for solid tiles. Refuses (with feedback)
         // on bedrock, no stamina, or rock harder than the current pickaxe.
         function tryStartMine(nx, ny, dx, dy) {
+            if (moveLock > 0) return;   // just stepped into open space — wait a beat
             const t = tileAt(nx, ny);
             if (t.type === T.BEDROCK) { SGSound.play("wrong"); return; }
             if (stats.stam <= 0) {
@@ -511,8 +526,9 @@
             // there's no footing under the new tile.
             const sdx = x - player.x, sdy = y - player.y;
             let movesInto = !(sdx === 0 && sdy < 0);
-            // Refuse to slide into a diagonal block when both orthogonal
-            // neighbours are solid — that would teleport the miner through a
+            // Refuse to slide into a diagonal block when the corner rule isn't
+            // met (no headroom above when climbing, or no opening above the
+            // target when descending) — that would teleport the miner through a
             // wall corner. They still break the block, just don't move into it.
             if (movesInto && sdx !== 0 && sdy !== 0 && !diagClear(sdx, sdy)) {
                 movesInto = false;
@@ -692,6 +708,7 @@
 
             if (flash > 0) flash--;
             if (msgT > 0) msgT--;
+            if (moveLock > 0) moveLock -= dt * 1000;
 
             for (let i = particles.length - 1; i >= 0; i--) {
                 const p = particles[i];
