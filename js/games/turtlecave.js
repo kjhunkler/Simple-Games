@@ -22,6 +22,10 @@
         const SLASH_ACTIVE = 0.15;
         const SLASH_RANGE = 66;                     // big sword reach
         const SLASH_HEIGHT = 54;
+        const SPIN_DUR = 0.42;                       // 3rd combo hit: spin attack
+        const SPIN_ACTIVE = 0.32;
+        const SPIN_RANGE = 82;                       // spin reaches both sides
+        const COMBO_WINDOW = 0.5;                    // time to chain the next combo hit
         const STAR_SPEED = 580;
         const PLAYER_DMG = 1;                       // every attack = 1 heart
 
@@ -36,6 +40,8 @@
         const SWIPE_THRESH = 38;
         const TAP_MAX_MOVE = 16;
         const TAP_MAX_TIME = 260;
+        const JUMP_ANGLE_MIN = Math.PI / 6;          // 30°: lean the jump past this
+        const JUMP_LEAN = 0.55;                      // how much sideways speed a leaning jump gets
 
         let W, H, groundY;
         let camX;
@@ -132,7 +138,8 @@
                 facing: 1, onGround: true, walk: 0,
                 dashTime: 0, dashCd: 0, dashIFrame: 0, dashUsed: false,
                 shell: false, invuln: 0,
-                attackTime: 0, attackCd: 0, slashId: 0, py: groundY
+                attackTime: 0, attackDur: ATTACK_DUR, attackCd: 0, slashId: 0,
+                comboStep: 0, comboTimer: 0, attackSpin: false, py: groundY
             };
             if (!keepStats) {
                 hearts = MAX_HEARTS;
@@ -184,10 +191,15 @@
 
         function banner(text, t) { bannerText = text; bannerTime = t; }
 
-        function jump() {
+        function jump(leanX) {
             if (!alive || hero.shell || !hero.onGround) return;
             started = true;
             hero.vy = -JUMP_V;
+            // Swiping at a steep enough angle leans the jump that way.
+            if (leanX) {
+                hero.vx = leanX * JUMP_V * JUMP_LEAN;
+                hero.facing = leanX < 0 ? -1 : 1;
+            }
             hero.onGround = false;
             SGSound.play("jump");
             puff(hero.x, hero.y, "#cdebd6", 6);
@@ -209,23 +221,58 @@
             puff(hero.x, hero.y - hero.h / 2, "#9ad8ff", 8);
         }
 
-        function attack() {
+        function attack(aim) {
             if (!alive || hero.shell || hero.attackCd > 0) return;
             started = true;
-            hero.attackTime = ATTACK_DUR;
+
+            // A click/tap turns the turtle to face the press before swinging.
+            if (aim) {
+                const ax = aim.x + camX;
+                if (Math.abs(ax - hero.x) > 6) hero.facing = ax < hero.x ? -1 : 1;
+            }
+
             if (weapon === "sword") {
-                hero.attackCd = 0.34;
+                // Advance the 3-hit combo; the window resets if you wait too long.
+                const chained = hero.comboTimer > 0 && hero.comboStep < 3;
+                hero.comboStep = chained ? hero.comboStep + 1 : 1;
+                hero.attackSpin = hero.comboStep === 3;
                 hero.slashId += 1;
-                SGSound.play("whack");
+                if (hero.attackSpin) {
+                    hero.attackDur = SPIN_DUR;
+                    hero.attackTime = SPIN_DUR;
+                    hero.attackCd = 0.46;
+                    hero.comboTimer = 0;             // spin ends the combo
+                    SGSound.play("explode");
+                    host.vibrate([12, 20, 14]);
+                } else {
+                    hero.attackDur = ATTACK_DUR;
+                    hero.attackTime = ATTACK_DUR;
+                    hero.attackCd = 0.22;
+                    hero.comboTimer = COMBO_WINDOW;
+                    SGSound.play("whack");
+                    host.vibrate(8);
+                }
             } else {
+                hero.attackDur = ATTACK_DUR;
+                hero.attackTime = ATTACK_DUR;
                 hero.attackCd = 0.3;
+                // Stars fly toward the press; otherwise straight ahead.
+                let vx = hero.facing * STAR_SPEED, vy = 0;
+                if (aim) {
+                    const tx = aim.x + camX, ty = aim.y;
+                    let dx = tx - (hero.x + hero.facing * 18);
+                    let dy = ty - (hero.y - hero.h / 2);
+                    const len = Math.hypot(dx, dy) || 1;
+                    vx = (dx / len) * STAR_SPEED;
+                    vy = (dy / len) * STAR_SPEED;
+                }
                 stars.push({
                     x: hero.x + hero.facing * 18, y: hero.y - hero.h / 2,
-                    vx: hero.facing * STAR_SPEED, vy: 0, life: 1.1, rot: 0
+                    vx: vx, vy: vy, life: 1.1, rot: 0
                 });
                 SGSound.play("shoot");
+                host.vibrate(8);
             }
-            host.vibrate(8);
         }
 
         function toggleWeapon() {
@@ -337,7 +384,15 @@
             const shellWanted = (touchShell || keyDown) && alive;
 
             if (alive) {
-                if (shellWanted && !hero.shell) { hero.shell = true; SGSound.play("bounce"); }
+                if (shellWanted && !hero.shell) {
+                    hero.shell = true;
+                    // Tucking into the shell cancels any in-progress sword combo.
+                    hero.attackTime = 0;
+                    hero.comboStep = 0;
+                    hero.comboTimer = 0;
+                    hero.attackSpin = false;
+                    SGSound.play("bounce");
+                }
                 if (!shellWanted && hero.shell) hero.shell = false;
                 updateHero(dt, moveDir);
             }
@@ -381,7 +436,10 @@
                 if (moveDir === 0 && hero.onGround) hero.vx *= Math.pow(0.0008, dt);
                 hero.vy += GRAVITY * dt;
             }
-            if (moveDir !== 0 && hero.dashTime <= 0 && !hero.shell) hero.facing = moveDir;
+            // Movement steers facing — but a sword swing keeps the facing the
+            // tap chose, so a click commits the attack direction for that hit.
+            const swingLock = weapon === "sword" && hero.attackTime > 0 && !hero.attackSpin;
+            if (moveDir !== 0 && hero.dashTime <= 0 && !hero.shell && !swingLock) hero.facing = moveDir;
 
             hero.x += hero.vx * dt;
             hero.y += hero.vy * dt;
@@ -401,14 +459,24 @@
             if (hero.invuln > 0) hero.invuln -= dt;
             if (hero.attackCd > 0) hero.attackCd -= dt;
             if (hero.attackTime > 0) hero.attackTime -= dt;
+            if (hero.comboTimer > 0) {
+                hero.comboTimer -= dt;
+                if (hero.comboTimer <= 0) hero.comboStep = 0;   // combo expired
+            }
             if (hero.dashCd > 0) hero.dashCd -= dt;
             if (hero.dashIFrame > 0) hero.dashIFrame -= dt;
 
-            // Sword slash: a wide arc that hits each enemy once per swing.
-            if (weapon === "sword" && hero.attackTime > ATTACK_DUR - SLASH_ACTIVE) {
-                const sx = hero.facing > 0 ? hero.x : hero.x - SLASH_RANGE;
-                const sy = hero.y - hero.h - 6;
-                const sb = { x: sx, y: sy, w: SLASH_RANGE, h: SLASH_HEIGHT };
+            // Sword strike: normal hits reach in front; the spin finisher hits
+            // a wider arc on BOTH sides. Each enemy is hit once per swing.
+            const spin = hero.attackSpin;
+            const activeWin = spin ? SPIN_ACTIVE : SLASH_ACTIVE;
+            if (weapon === "sword" && hero.attackTime > hero.attackDur - activeWin) {
+                const range = spin ? SPIN_RANGE : SLASH_RANGE;
+                const sx = spin ? hero.x - range : (hero.facing > 0 ? hero.x : hero.x - range);
+                const sw = spin ? range * 2 : range;
+                const sy = hero.y - hero.h - (spin ? 14 : 6);
+                const sh = spin ? SLASH_HEIGHT + 16 : SLASH_HEIGHT;
+                const sb = { x: sx, y: sy, w: sw, h: sh };
                 for (const e of enemies) {
                     if (e.lastHitSlash === hero.slashId) continue;
                     const eb = enemyBox(e);
@@ -927,12 +995,23 @@
                     ctx.arc(-2 + i * 9, -hero.h / 2 - 1, 4, 0, Math.PI * 2);
                     ctx.fill();
                 }
-                // sword in the front hand
-                const swing = hero.attackTime > 0 && weapon === "sword"
-                    ? (1 - hero.attackTime / ATTACK_DUR) : 0;
+                // sword in the front hand — animation differs per combo step
+                let blade = 0;       // shoulder rotation of the sword
+                if (hero.attackTime > 0 && weapon === "sword") {
+                    const prog = 1 - hero.attackTime / hero.attackDur;
+                    if (hero.attackSpin) {
+                        blade = -1.1 + prog * Math.PI * 2;          // full spin
+                    } else if (hero.comboStep === 2) {
+                        blade = 1.1 - prog * 2.0;                    // upward back-swing
+                    } else {
+                        blade = -1.1 + prog * 2.0;                   // downward chop
+                    }
+                } else {
+                    blade = -1.1;
+                }
                 ctx.save();
                 ctx.translate(hero.w / 2 - 2, -10);
-                ctx.rotate(-1.1 + swing * 2.0);
+                ctx.rotate(blade);
                 ctx.fillStyle = "#cfd8e6";
                 roundRect(0, -3, 24, 5, 2);
                 ctx.fillStyle = "#ffd166";
@@ -941,19 +1020,46 @@
             }
             ctx.restore();
 
-            // Sword slash arc (drawn in world space, large telegraphed range).
-            if (weapon === "sword" && hero.attackTime > ATTACK_DUR - SLASH_ACTIVE && !hero.shell) {
-                const prog = 1 - (hero.attackTime - (ATTACK_DUR - SLASH_ACTIVE)) / SLASH_ACTIVE;
+            // Sword slash arc (world space). Each combo step looks different;
+            // the third hit is a full spin that sweeps both sides.
+            const slashWin = hero.attackSpin ? SPIN_ACTIVE : SLASH_ACTIVE;
+            if (weapon === "sword" && hero.attackTime > hero.attackDur - slashWin && !hero.shell) {
+                const prog = 1 - (hero.attackTime - (hero.attackDur - slashWin)) / slashWin;
                 ctx.save();
                 ctx.translate(hero.x, hero.y - hero.h / 2);
-                ctx.scale(hero.facing, 1);
-                ctx.globalAlpha = 0.6 * (1 - prog);
-                ctx.strokeStyle = "#eaf2ff";
-                ctx.lineWidth = 7;
                 ctx.lineCap = "round";
-                ctx.beginPath();
-                ctx.arc(6, 0, SLASH_RANGE - 8, -0.9 + prog * 0.6, 0.9 + prog * 0.6);
-                ctx.stroke();
+                if (hero.attackSpin) {
+                    // Spin: a bright ring that whips all the way around.
+                    const rad = SPIN_RANGE - 12;
+                    const a0 = -Math.PI / 2 + prog * Math.PI * 2;
+                    ctx.globalAlpha = 0.7 * (1 - prog * 0.5);
+                    ctx.strokeStyle = "#fff2c2";
+                    ctx.lineWidth = 9;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, rad, a0, a0 + Math.PI * 1.4);
+                    ctx.stroke();
+                    ctx.globalAlpha = 0.35 * (1 - prog);
+                    ctx.strokeStyle = "#eaf2ff";
+                    ctx.lineWidth = 4;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, rad, 0, Math.PI * 2);
+                    ctx.stroke();
+                } else {
+                    ctx.scale(hero.facing, 1);
+                    ctx.globalAlpha = 0.6 * (1 - prog);
+                    ctx.strokeStyle = "#eaf2ff";
+                    ctx.lineWidth = 7;
+                    if (hero.comboStep === 2) {
+                        // Second hit sweeps upward.
+                        ctx.beginPath();
+                        ctx.arc(6, 0, SLASH_RANGE - 8, 0.9 - prog * 0.6, -0.9 - prog * 0.6, true);
+                        ctx.stroke();
+                    } else {
+                        ctx.beginPath();
+                        ctx.arc(6, 0, SLASH_RANGE - 8, -0.9 + prog * 0.6, 0.9 + prog * 0.6);
+                        ctx.stroke();
+                    }
+                }
                 ctx.restore();
                 ctx.globalAlpha = 1;
             }
@@ -1036,8 +1142,8 @@
                 ctx.fillText("Swipe & HOLD to move \u2022 swipe UP to jump", W / 2, H * 0.34);
                 ctx.font = "500 14px system-ui, sans-serif";
                 ctx.fillStyle = "rgba(154,160,195,0.95)";
-                ctx.fillText("TAP to attack \u2022 swipe in the air to DASH", W / 2, H * 0.34 + 24);
-                ctx.fillText("Swipe DOWN for shell shield \u2022 reach the boss!", W / 2, H * 0.34 + 46);
+                ctx.fillText("TAP to face & attack \u2022 chain 3 for a spin!", W / 2, H * 0.34 + 24);
+                ctx.fillText("Swipe in the air to DASH \u2022 swipe DOWN for shell", W / 2, H * 0.34 + 46);
             }
         }
 
@@ -1077,8 +1183,14 @@
                 if (Math.max(adx, ady) < MOVE_THRESH) return;
                 if (ady > adx) {
                     if (dy < -SWIPE_THRESH) {
-                        if (hero.onGround) jump();
-                        else startDash(hero.facing * 0.4, -1);
+                        if (hero.onGround) {
+                            // Lean the jump when the upward swipe is angled > 30°.
+                            const ang = Math.atan2(adx, ady);   // 0 = straight up
+                            const lean = ang > JUMP_ANGLE_MIN ? (dx < 0 ? -1 : 1) : 0;
+                            jump(lean);
+                        } else {
+                            startDash(hero.facing * 0.4, -1);
+                        }
                         p.mode = "swiped";
                     } else if (dy > SWIPE_THRESH) {
                         touchShell = true; shellId = id; p.mode = "shell";
@@ -1104,7 +1216,7 @@
             if (!p || p.isBtn) return;
             const heldFor = performance.now() - p.st;
             const dist = Math.hypot(x - p.sx, y - p.sy);
-            if (p.mode === "" && dist < TAP_MAX_MOVE && heldFor < TAP_MAX_TIME) attack();
+            if (p.mode === "" && dist < TAP_MAX_MOVE && heldFor < TAP_MAX_TIME) attack({ x: x, y: y });
             if (moveId === id) { moveId = null; touchMoveDir = 0; }
             if (shellId === id) { shellId = null; touchShell = false; }
         }
