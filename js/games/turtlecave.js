@@ -1556,6 +1556,8 @@
                 ctx.globalAlpha = 1;
             }
         }
+
+        function drawHud() {
             // Hearts
             for (let i = 0; i < MAX_HEARTS; i++) {
                 ctx.globalAlpha = i < hearts ? 1 : 0.22;
