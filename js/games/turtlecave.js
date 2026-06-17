@@ -1629,11 +1629,11 @@
                 ctx.fillStyle = "rgba(242,243,255,0.92)";
                 ctx.font = "700 16px system-ui, sans-serif";
                 ctx.textAlign = "center";
-                ctx.fillText("Swipe & HOLD to move \u2022 swipe UP to jump", W / 2, H * 0.34);
+                ctx.fillText("Swipe & HOLD to move \u2022 swipe UP to jump (x2)", W / 2, H * 0.34);
                 ctx.font = "500 14px system-ui, sans-serif";
                 ctx.fillStyle = "rgba(154,160,195,0.95)";
-                ctx.fillText("TAP to face & attack \u2022 chain 3 for a spin!", W / 2, H * 0.34 + 24);
-                ctx.fillText("Swipe in the air to DASH \u2022 swipe DOWN for shell", W / 2, H * 0.34 + 46);
+                ctx.fillText("TAP to attack \u2022 flick fast to DASH \u2022 chain 3 for a spin!", W / 2, H * 0.34 + 24);
+                ctx.fillText("Swipe DOWN for shell \u2022 slam down to crush foes", W / 2, H * 0.34 + 46);
             }
         }
 
