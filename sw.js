@@ -30,6 +30,7 @@ const ASSETS = [
     "./js/games/bughunt.js",
     "./js/games/digger.js",
     "./js/games/catcher.js",
+    "./js/games/turtlecave.js",
     "./icons/icon.svg",
     "./icons/icon-maskable.svg"
 ];
