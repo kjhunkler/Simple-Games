@@ -160,6 +160,12 @@
             // Airy dive — a falling whoosh for the flying boss.
             tone(900, 0.3, { type: "sine", slide: 220, vol: 0.1 });
             noise(0.3, { filterType: "bandpass", filter: 1800, filterSlide: 500, vol: 0.1 });
+        },
+        bosszap() {
+            // Electric crack: a sharp zap with a bright crackle for lightning.
+            tone(1200, 0.16, { type: "sawtooth", slide: 180, vol: 0.12 });
+            tone(440, 0.12, { type: "square", slide: 90, vol: 0.08, delay: 0.01 });
+            noise(0.22, { filterType: "highpass", filter: 3400, filterSlide: 1200, vol: 0.16 });
         }
     };
 

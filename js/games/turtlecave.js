@@ -96,7 +96,7 @@
         // Each boss has a distinct silhouette, palette, movement style and a set
         // of attacks. The flying wyvern hovers out of melee reach, nudging the
         // player toward throwing stars. Order cycles by level.
-        const BOSS_ORDER = ["golem", "warbot", "marshking", "prowler", "wyvern", "siegebot"];
+        const BOSS_ORDER = ["golem", "warbot", "marshking", "prowler", "wyvern", "siegebot", "stormwyvern"];
         const BOSSES = {
             golem: {
                 name: "CAVE GOLEM", w: 100, h: 110, flying: false,
@@ -136,6 +136,13 @@
                 body: "#7a3f86", bodyLit: "#d09ad6", trim: "#4a2350", eye: "#ff7be6",
                 speed: 168, hpMul: 0.95, contactKnock: 320, coolMul: 0.62,
                 attacks: ["dive", "fireball", "strafe"]
+            },
+            stormwyvern: {
+                // Electric cousin of the wyvern: hammers the arena with lightning.
+                name: "STORM WYVERN", w: 96, h: 72, flying: true, variant: "storm",
+                body: "#3a5a9e", bodyLit: "#9ad0f0", trim: "#23306a", eye: "#ffe14d",
+                speed: 178, hpMul: 1.0, contactKnock: 320, coolMul: 0.58, range: 720,
+                attacks: ["bolt", "thunder", "dive"]
             }
         };
         const BOSS_ENRAGE = 0.4;                     // below this HP fraction the boss enrages
@@ -143,7 +150,7 @@
         let W, H, groundY, ceilingY;
         let camX;
         let levelLength, level;
-        let hero, platforms, enemies, gems, drops, stars, orbs, particles, chest, stalactites, ceilingDecor;
+        let hero, platforms, enemies, gems, drops, stars, orbs, particles, bolts, chest, stalactites, ceilingDecor;
         let pal;
         let amb, motes;                             // ambient biome flavour + drifting motes
         let enemyIdSeq = 0;
@@ -177,7 +184,7 @@
                 groundY = newGround;
                 if (hero) hero.y += dy;
                 if (platforms) platforms.forEach(p => p.y += dy);
-                if (enemies) enemies.forEach(e => e.baseY += dy);
+                if (enemies) enemies.forEach(e => { e.baseY += dy; if (e.flying) e.hoverY += dy; });
                 if (gems) gems.forEach(g => g.y += dy);
                 if (drops) drops.forEach(d => d.y += dy);
                 if (boss) boss.baseY += dy;
@@ -214,6 +221,7 @@
             drops = [];
             stars = [];
             orbs = [];
+            bolts = [];
             particles = [];
             stalactites = [];
             ceilingDecor = [];
@@ -285,6 +293,18 @@
                 const t = types[Math.floor(Math.random() * types.length)];
                 enemies.push(makeEnemy(t, ex, groundY, ex - 80, ex + 80));
                 ex += gap + Math.random() * 220;
+            }
+
+            // Rare flying drakelings — small, simple cousins of the cave wyvern
+            // that drift at head height and swoop at the turtle. They spawn on
+            // their own sparse pass so the ground-enemy density is unchanged.
+            let fx = 820;
+            while (fx < levelLength - 560) {
+                if (Math.random() < 0.22) {
+                    const hoverY = groundY - (150 + Math.random() * 60);
+                    enemies.push(makeEnemy("drakeling", fx, hoverY, fx - 170, fx + 170));
+                }
+                fx += 700 + Math.random() * 460;
             }
 
             // Treasure gems on the ground to reward exploring.
@@ -366,6 +386,12 @@
             };
             if (kind === "zombie") { e.hp = 2; e.w = 30; e.h = 44; e.speed = 46 * ENEMY_SPEED; e.reward = 10; }
             else if (kind === "marsh") { e.hp = 2; e.w = 40; e.h = 36; e.speed = 34 * ENEMY_SPEED; e.reward = 12; }
+            else if (kind === "drakeling") {
+                // Small airborne swooper: hovers, then dives at the hero.
+                e.hp = 2; e.w = 34; e.h = 26; e.speed = 96 * ENEMY_SPEED; e.reward = 14;
+                e.flying = true; e.onGround = false; e.hoverY = baseY;
+                e.wing = 0; e.diveVX = 0; e.diveVY = 0;
+            }
             else { e.hp = 3; e.w = 46; e.h = 48; e.speed = 0; e.ranged = true; e.reward = 16; }
             return e;
         }
@@ -682,6 +708,7 @@
             chest = { x: boss.x, y: groundY - 4, open: 0 };
             enemies = [];
             orbs = [];
+            bolts = [];
             boss = null;
             victory = true;
             levelAdvance = 3;
@@ -749,6 +776,7 @@
             updateEnemies(dt);
             updateBoss(dt);
             updateOrbs(dt);
+            updateBolts(dt);
             updatePickups(dt);
             updateStalactites(dt);
 
@@ -1022,6 +1050,7 @@
         }
 
         function stepEnemy(e, dt) {
+            if (e.flying) { stepFlyer(e, dt); return; }
             e.t += dt;
             const dist = hero.x - e.x;
             const adist = Math.abs(dist);
@@ -1100,6 +1129,79 @@
             }
         }
 
+        // A simple flying swooper (drakeling): hovers and bobs, then commits to a
+        // fixed-velocity dive at the hero before climbing back to its hover line.
+        function stepFlyer(e, dt) {
+            e.t += dt;
+            const dist = hero.x - e.x;
+            const adist = Math.abs(dist);
+            const faceTo = dist < 0 ? -1 : 1;
+            e.wing = Math.sin(e.t * 18);
+
+            // Knockback from the turtle's dash/shell shoves it sideways.
+            if (e.knock) {
+                e.x += e.knock * dt;
+                e.knock *= Math.pow(0.015, dt);
+                if (Math.abs(e.knock) < 6) e.knock = 0;
+                e.x = Math.max(12, Math.min(e.x, levelLength - 12));
+            }
+
+            switch (e.state) {
+                case "walk": {
+                    e.cd -= dt;
+                    e.facing = faceTo;
+                    e.baseY = e.hoverY + Math.sin(e.t * 2.5) * 14;
+                    if (adist < CHASE_RANGE) {
+                        // Press in toward a short stand-off above the hero.
+                        const want = hero.x - faceTo * 90;
+                        e.x += Math.sign(want - e.x) * e.speed * 1.2 * dt;
+                    } else {
+                        e.x += e.facing * e.speed * 0.4 * dt;
+                        if (e.x < e.patrolMin) e.facing = 1;
+                        if (e.x > e.patrolMax) e.facing = -1;
+                    }
+                    e.x = Math.max(12, Math.min(e.x, levelLength - 12));
+                    if (e.cd <= 0 && adist < 240) { e.state = "windup"; e.t = 0; e.facing = faceTo; }
+                    break;
+                }
+                case "windup":
+                    // Hover and jitter as a telegraph before the dive.
+                    e.facing = faceTo;
+                    e.baseY = e.hoverY + Math.sin(e.t * 26) * 3;
+                    if (e.t >= TELEGRAPH) {
+                        e.state = "attack"; e.t = 0;
+                        e.facing = (hero.x < e.x) ? -1 : 1;
+                        const dx = hero.x - e.x, dy = (hero.y - 12) - e.baseY;
+                        const len = Math.hypot(dx, dy) || 1;
+                        const sp = e.speed * 3.4;
+                        e.diveVX = (dx / len) * sp;
+                        e.diveVY = (dy / len) * sp;
+                        SGSound.play("bossswoop");
+                    }
+                    break;
+                case "attack":
+                    if (e.t < 0.5) {
+                        // Commit to the launch velocity; a moving hero can dodge.
+                        e.x += e.diveVX * dt;
+                        e.baseY += e.diveVY * dt;
+                        e.x = Math.max(12, Math.min(e.x, levelLength - 12));
+                        e.baseY = Math.min(e.baseY, groundY - 6);
+                        const eb = enemyBox(e); const hb = heroBox();
+                        if (overlap(eb.x, eb.y, eb.w, eb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
+                    } else {
+                        // Climb back up to the hover line, then recover.
+                        e.baseY += (e.hoverY - e.baseY) * Math.min(1, dt * 6);
+                        if (Math.abs(e.baseY - e.hoverY) < 6) { e.baseY = e.hoverY; e.state = "recover"; e.t = 0; }
+                    }
+                    break;
+                case "recover":
+                    e.facing = faceTo;
+                    e.baseY = e.hoverY + Math.sin(e.t * 2.5) * 14;
+                    if (e.t >= ENEMY_RECOVER) { e.state = "walk"; e.cd = ENEMY_COOLDOWN; }
+                    break;
+            }
+        }
+
         function updateBoss(dt) {
             if (!boss) return;
             if (boss.hitFlash > 0) boss.hitFlash -= dt;
@@ -1173,6 +1275,8 @@
 
                 case "attack":
                     updateBossAttack(dt, rage);
+                    // Fail-safe: never let an attack animation run away forever.
+                    if (boss.state === "attack" && boss.t >= 2.5) { boss.state = "recover"; boss.t = 0; }
                     break;
 
                 case "beam": {
@@ -1303,6 +1407,35 @@
                     SGSound.play("shoot");
                     break;
                 }
+                case "bolt": {
+                    // Storm wyvern looses a fan of fast electric bolts at the hero.
+                    const n = b.enraged ? 5 : 3;
+                    const baseAng = Math.atan2((hero.y - 20) - cy, hero.x - cx);
+                    for (let i = 0; i < n; i++) {
+                        const ang = baseAng + (i - (n - 1) / 2) * 0.17;
+                        spawnProjectile(cx, cy, Math.cos(ang) * 540, Math.sin(ang) * 540, "bolt", i * 0.05);
+                    }
+                    SGSound.play("bosszap");
+                    break;
+                }
+                case "thunder": {
+                    // Storm wyvern calls lightning down from the cave ceiling at
+                    // telegraphed spots near the hero, forcing the player to move.
+                    const n = b.enraged ? 4 : 3;
+                    for (let i = 0; i < n; i++) {
+                        const lx = hero.x + (i - (n - 1) / 2) * 130 + (Math.random() - 0.5) * 40;
+                        const jag = [0];
+                        const steps = 7;
+                        for (let s = 1; s < steps; s++) jag.push((Math.random() - 0.5) * 26);
+                        jag.push(0);
+                        bolts.push({
+                            x: Math.max(40, Math.min(lx, levelLength - 40)),
+                            warn: 0.7 + i * 0.16, flash: 0, jag: jag
+                        });
+                    }
+                    SGSound.play("bosscharge");
+                    break;
+                }
             }
         }
 
@@ -1331,38 +1464,43 @@
                 }
                 case "dive": {
                     // Wyvern arcs down and steers toward the hero, then climbs back.
-                    const steer = b.diveTargetX < b.x ? -1 : 1;
-                    if (b.t < 0.55) b.facing = steer;       // home in during the descent
-                    b.x += b.facing * b.lungeV * dt;
-                    b.lungeV = Math.max(0, b.lungeV - 200 * dt);
-                    b.vy += GRAVITY * 0.5 * dt;
-                    b.baseY += b.vy * dt;
-                    b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
-                    const bb = enemyBox(b); const hb = heroBox();
-                    if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
-                    const floor = b.hoverY + 150;       // dive bottom near the ground
-                    if (b.baseY >= floor) { b.baseY = floor; b.vy = -300; puff(b.x, b.baseY, "#d09ad6", 10); SGSound.play("whack"); }
-                    if (b.t >= 0.85) {
+                    if (b.t < 0.85) {
+                        const steer = b.diveTargetX < b.x ? -1 : 1;
+                        if (b.t < 0.55) b.facing = steer;       // home in during the descent
+                        b.x += b.facing * b.lungeV * dt;
+                        b.lungeV = Math.max(0, b.lungeV - 200 * dt);
+                        b.vy += GRAVITY * 0.5 * dt;
+                        b.baseY += b.vy * dt;
+                        b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
+                        const bb = enemyBox(b); const hb = heroBox();
+                        if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
+                        const floor = b.hoverY + 150;       // dive bottom near the ground
+                        if (b.baseY >= floor) { b.baseY = floor; b.vy = -300; puff(b.x, b.baseY, "#d09ad6", 10); SGSound.play("whack"); }
+                    } else {
                         // Climb back to the hover line and recover.
+                        b.vy = 0;
                         b.baseY += (b.hoverY - b.baseY) * Math.min(1, dt * 7);
                         if (Math.abs(b.baseY - b.hoverY) < 6) { b.baseY = b.hoverY; b.state = "recover"; b.t = 0; }
                     }
                     break;
                 }
                 case "strafe": {
-                    // Wyvern streaks horizontally across the arena, dropping fire.
-                    b.x += b.facing * b.lungeV * dt;
-                    b.baseY = b.hoverY + 40 + Math.sin(b.anim * 5) * 6;
-                    b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
-                    const bb = enemyBox(b); const hb = heroBox();
-                    if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
-                    // Rain a fireball straight down at a steady cadence.
-                    b.strafeDrop -= dt;
-                    if (b.strafeDrop <= 0) {
-                        b.strafeDrop = 0.16;
-                        spawnProjectile(b.x, b.baseY - b.h * 0.4, b.facing * 60, 220, "fire");
-                    }
-                    if (b.t >= 0.85) {
+                    // Wyvern streaks horizontally across the arena, dropping fire,
+                    // then peels off and climbs back to its hover line.
+                    if (b.t < 0.85) {
+                        b.x += b.facing * b.lungeV * dt;
+                        b.baseY = b.hoverY + 40 + Math.sin(b.anim * 5) * 6;
+                        b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
+                        const bb = enemyBox(b); const hb = heroBox();
+                        if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
+                        // Rain a fireball straight down at a steady cadence.
+                        b.strafeDrop -= dt;
+                        if (b.strafeDrop <= 0) {
+                            b.strafeDrop = 0.16;
+                            spawnProjectile(b.x, b.baseY - b.h * 0.4, b.facing * 60, 220, "fire");
+                        }
+                    } else {
+                        // Climb back to the hover line and recover.
                         b.baseY += (b.hoverY - b.baseY) * Math.min(1, dt * 7);
                         if (Math.abs(b.baseY - b.hoverY) < 6) { b.baseY = b.hoverY; b.state = "recover"; b.t = 0; }
                     }
@@ -1464,6 +1602,30 @@
                 }
             }
             orbs = orbs.filter(o => o.life > 0 && o.x > camX - 80 && o.x < camX + W + 80);
+        }
+
+        // Telegraphed lightning strikes that fall from the cave ceiling. Each
+        // bolt warns on the floor, then flashes a jagged column that zaps the
+        // hero if they're caught beneath it when it lands.
+        function updateBolts(dt) {
+            for (const lb of bolts) {
+                if (lb.warn > 0) {
+                    lb.warn -= dt;
+                    if (lb.warn <= 0) {
+                        lb.flash = 0.22;
+                        SGSound.play("bosszap");
+                        screenShake(0.18, 5);
+                        puff(lb.x, groundY, "#bfe6ff", 12);
+                        const hb = heroBox();
+                        if (Math.abs((hb.x + hb.w / 2) - lb.x) < 34 && hero.invuln <= 0 && hero.dashIFrame <= 0) {
+                            hurtHero();
+                        }
+                    }
+                } else {
+                    lb.flash -= dt;
+                }
+            }
+            bolts = bolts.filter(lb => lb.warn > 0 || lb.flash > 0);
         }
 
         function updatePickups(dt) {
@@ -1643,6 +1805,8 @@
                 ctx.fillStyle = "#ffe08a";
                 drawStarShape(s.x, s.y, 10, s.rot);
             }
+
+            drawBolts();
 
             drawTurtle();
 
@@ -1983,6 +2147,26 @@
                 return;
             }
             // Default fireball (fire / generic).
+            if (type === "bolt") {
+                // Fast crackling electric bolt with a glowing core.
+                ctx.save();
+                ctx.translate(o.x, o.y);
+                ctx.rotate(Math.atan2(o.vy, o.vx));
+                ctx.globalCompositeOperation = "lighter";
+                const g = ctx.createRadialGradient(0, 0, 1, 0, 0, r + 3);
+                g.addColorStop(0, "#ffffff");
+                g.addColorStop(0.45, "#9ad0f0");
+                g.addColorStop(1, "rgba(80,140,255,0.04)");
+                ctx.fillStyle = g;
+                ctx.beginPath(); ctx.arc(0, 0, r + 2, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = "#dff4ff"; ctx.lineWidth = 2; ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.moveTo(-r - 12, 0); ctx.lineTo(-r - 5, -5);
+                ctx.lineTo(-r - 1, 4); ctx.lineTo(2, 0);
+                ctx.stroke();
+                ctx.restore();
+                return;
+            }
             const grad = ctx.createRadialGradient(o.x, o.y, 1, o.x, o.y, r);
             grad.addColorStop(0, "#fff2b0");
             grad.addColorStop(0.5, "#ff7b3d");
@@ -1991,6 +2175,50 @@
             ctx.beginPath();
             ctx.arc(o.x, o.y, r, 0, Math.PI * 2);
             ctx.fill();
+        }
+
+        // Render pending and striking ceiling lightning bolts.
+        function drawBolts() {
+            if (!bolts || !bolts.length) return;
+            for (const lb of bolts) {
+                if (lb.x < camX - 50 || lb.x > camX + W + 50) continue;
+                if (lb.warn > 0) {
+                    // Telegraph: dashed guide line + a pulsing floor marker.
+                    const pulse = 0.5 + 0.5 * Math.sin(time * 28);
+                    ctx.save();
+                    ctx.globalAlpha = 0.25 + 0.45 * pulse;
+                    ctx.strokeStyle = "#bfe6ff";
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 9]);
+                    ctx.beginPath(); ctx.moveTo(lb.x, ceilingY); ctx.lineTo(lb.x, groundY); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = "#9ad0f0";
+                    ctx.beginPath(); ctx.ellipse(lb.x, groundY, 30, 8, 0, 0, Math.PI * 2); ctx.fill();
+                    ctx.restore();
+                } else if (lb.flash > 0) {
+                    // The strike: layered jagged bolt for a bright electric flash.
+                    const a = Math.max(0, Math.min(1, lb.flash / 0.22));
+                    const stroke = (w, col) => {
+                        ctx.strokeStyle = col; ctx.lineWidth = w;
+                        ctx.beginPath();
+                        const steps = lb.jag.length - 1;
+                        for (let s = 0; s <= steps; s++) {
+                            const y = ceilingY + (groundY - ceilingY) * (s / steps);
+                            const px = lb.x + lb.jag[s];
+                            if (s === 0) ctx.moveTo(px, y); else ctx.lineTo(px, y);
+                        }
+                        ctx.stroke();
+                    };
+                    ctx.save();
+                    ctx.globalCompositeOperation = "lighter";
+                    ctx.globalAlpha = a;
+                    ctx.lineCap = "round"; ctx.lineJoin = "round";
+                    stroke(16, "rgba(120,190,255,0.45)");
+                    stroke(6, "#dff4ff");
+                    stroke(2, "#ffffff");
+                    ctx.restore();
+                }
+            }
         }
 
         function drawEnemy(e) {
@@ -2032,6 +2260,58 @@
                 ctx.arc(e.facing * 4 - 6, -e.h * squash * 0.6, 3, 0, Math.PI * 2);
                 ctx.arc(e.facing * 4 + 6, -e.h * squash * 0.6, 3, 0, Math.PI * 2);
                 ctx.fill();
+            } else if (e.kind === "drakeling") {
+                // ----- Small flying drakeling (mini cave wyvern) -----
+                const flap = e.wing || Math.sin(time * 18);
+                const w2 = e.w, h2 = e.h;
+                // Ground shadow hints at how high it is hovering.
+                ctx.save();
+                ctx.fillStyle = "rgba(0,0,0,0.18)";
+                ctx.beginPath();
+                ctx.ellipse(0, groundY - bottom, w2 * 0.5, 5, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                ctx.save();
+                ctx.scale(e.facing, 1);                 // local +x faces the hero
+                // wings (behind the body)
+                ctx.fillStyle = "#5a3470";
+                for (const side of [-1, 1]) {
+                    ctx.save();
+                    ctx.translate(0, -h2 * 0.7);
+                    ctx.rotate(side * (0.4 + flap * 0.5));
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.quadraticCurveTo(side * w2 * 0.7, -h2 * 0.55, side * w2 * 0.95, h2 * 0.1);
+                    ctx.quadraticCurveTo(side * w2 * 0.5, 0, 0, h2 * 0.2);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.restore();
+                }
+                // body
+                ctx.fillStyle = winding ? "#b87fd0" : "#8a4fa6";
+                ctx.beginPath();
+                ctx.ellipse(0, -h2 * 0.6, w2 * 0.32, h2 * 0.5, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // tail trailing behind
+                ctx.strokeStyle = "#8a4fa6"; ctx.lineWidth = 5; ctx.lineCap = "round";
+                ctx.beginPath(); ctx.moveTo(-w2 * 0.2, -h2 * 0.5); ctx.lineTo(-w2 * 0.62, -h2 * 0.18); ctx.stroke();
+                // head with a little horn
+                ctx.fillStyle = "#a96fc4";
+                ctx.beginPath();
+                ctx.ellipse(w2 * 0.3, -h2 * 0.8, w2 * 0.2, h2 * 0.26, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = "#5a3470";
+                ctx.beginPath();
+                ctx.moveTo(w2 * 0.34, -h2 * 1.02); ctx.lineTo(w2 * 0.42, -h2 * 1.2); ctx.lineTo(w2 * 0.4, -h2 * 0.96);
+                ctx.closePath(); ctx.fill();
+                // eye
+                const deye = winding ? "#ffd166" : "#ff7be6";
+                ctx.fillStyle = deye;
+                if (winding) { ctx.shadowColor = deye; ctx.shadowBlur = 10; }
+                ctx.beginPath(); ctx.arc(w2 * 0.36, -h2 * 0.84, winding ? 4 : 3, 0, Math.PI * 2); ctx.fill();
+                ctx.shadowBlur = 0;
+                ctx.restore();
             } else {
                 ctx.fillStyle = "#9aa3b5";
                 roundRect(-e.w / 2, -e.h, e.w, e.h * 0.78, 6);
@@ -2251,6 +2531,7 @@
                 // ----- Flying cave wyvern -----
                 const flap = b.wing || Math.sin(b.anim * 16);
                 const diving = b.state === "attack" && b.move === "dive";
+                const storm = cfg.variant === "storm";
                 // wings (behind body)
                 ctx.fillStyle = cfg.trim;
                 for (const side of [-1, 1]) {
@@ -2313,6 +2594,23 @@
                 ctx.beginPath();
                 ctx.arc(W2 * 0.28, -H2 * (diving ? 0.46 : 0.66), 5, 0, Math.PI * 2);
                 ctx.fill();
+                if (storm) {
+                    // Crackling static arcs flicker around the storm wyvern.
+                    ctx.save();
+                    ctx.globalCompositeOperation = "lighter";
+                    ctx.strokeStyle = "#bfe6ff";
+                    ctx.lineWidth = 2; ctx.lineCap = "round";
+                    for (let s = 0; s < 3; s++) {
+                        const a0 = b.anim * 9 + s * 2.1;
+                        const rr = W2 * 0.34;
+                        const x0 = Math.cos(a0) * rr, y0 = -H2 * 0.5 + Math.sin(a0) * rr * 0.7;
+                        const x1 = Math.cos(a0 + 1.3) * rr, y1 = -H2 * 0.5 + Math.sin(a0 + 1.3) * rr * 0.7;
+                        const mx = (x0 + x1) / 2 + (Math.random() - 0.5) * 12;
+                        const my = (y0 + y1) / 2 + (Math.random() - 0.5) * 12;
+                        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(mx, my); ctx.lineTo(x1, y1); ctx.stroke();
+                    }
+                    ctx.restore();
+                }
             }
             ctx.shadowBlur = 0;
             ctx.restore();
