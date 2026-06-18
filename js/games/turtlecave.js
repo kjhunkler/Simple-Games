@@ -13,7 +13,8 @@
         const HIT_INVULN = 5;                       // seconds of mercy after a hit
         const GRAVITY = 2100;
         const MOVE_SPEED = 220;
-        const AIR_MOVE = 140;                        // partial air steering: slower than ground walking
+        const AIR_MOVE = 185;                        // air steering top speed — close to walking for strong drift control
+        const AIR_ACCEL = 2400;                      // how fast air steering changes velocity (near-ground for snappy drift)
         const JUMP_V = 770;
         const DASH_SPEED = 660;
         const DASH_TIME = 0.18;
@@ -44,6 +45,7 @@
         const DOUBLE_JUMP_V = JUMP_V * 1.05;        // second, mid-air jump — a touch higher than the first
         const SHELL_FALL_MIN = 1150;                // shell plummets at least this fast
         const SHELL_GRAVITY_MULT = 1.7;             // extra gravity while shelled mid-air
+        const SHELL_GROUND_FRICTION = 0.22;         // shelled slide drags to a gentle stop (retains momentum)
         const SHELL_SLAM_MINVY = 680;               // fall speed needed to trigger a slam
         const SHELL_SLAM_RANGE = 100;               // slam shock radius
         const SHELL_SLAM_KNOCK = 320;               // slam knockback strength
@@ -218,7 +220,7 @@
                 x: 90, y: groundY, vx: 0, vy: 0, w: 36, h: 30,
                 facing: 1, onGround: true, walk: 0,
                 dashTime: 0, dashCd: 0, dashIFrame: 0, dashUsed: false, dashHit: {},
-                shell: false, invuln: 0, shellHold: 0, fallThrough: 0, jumpsUsed: 0,
+                shell: false, slamming: false, invuln: 0, shellHold: 0, fallThrough: 0, jumpsUsed: 0,
                 attackTime: 0, attackDur: ATTACK_DUR, attackCd: 0, slashId: 0,
                 comboStep: 0, comboTimer: 0, attackSpin: false, py: groundY, lunge: 0
             };
@@ -558,6 +560,10 @@
             if (alive) {
                 if (shellWanted && !hero.shell) {
                     hero.shell = true;
+                    // Tucking into the shell while airborne commits to a ground
+                    // slam: once started it always drops to the floor, so the
+                    // player doesn't have to keep holding down to finish it.
+                    if (!hero.onGround) hero.slamming = true;
                     // Tucking into the shell cancels any in-progress sword combo.
                     hero.attackTime = 0;
                     hero.comboStep = 0;
@@ -565,7 +571,9 @@
                     hero.attackSpin = false;
                     SGSound.play("bounce");
                 }
-                if (!shellWanted && hero.shell) hero.shell = false;
+                // A committed slam stays tucked until it lands; otherwise the
+                // shell simply follows whether the player is holding the gesture.
+                if (!shellWanted && hero.shell && !hero.slamming) hero.shell = false;
                 updateHero(dt, moveDir);
             }
 
@@ -600,20 +608,25 @@
             if (hero.dashTime > 0) {
                 hero.dashTime -= dt;
                 if (hero.dashTime <= 0) hero.vy = 0;
-            } else {
-                let target = moveDir * (hero.onGround ? MOVE_SPEED : AIR_MOVE);
-                if (hero.shell) target = 0;
-                const accel = hero.onGround ? 2600 : 1700;
-                if (hero.vx < target) hero.vx = Math.min(target, hero.vx + accel * dt);
-                else hero.vx = Math.max(target, hero.vx - accel * dt);
-                if (moveDir === 0 && hero.onGround) hero.vx *= Math.pow(0.0008, dt);
-                if (hero.shell && !hero.onGround) {
+            } else if (hero.shell) {
+                // Tucked in: no active steering, but horizontal momentum is kept.
+                // Airborne the turtle holds its speed for a diving slam; grounded
+                // it slides to a gentle stop instead of halting on the spot.
+                if (hero.onGround) {
+                    hero.vx *= Math.pow(SHELL_GROUND_FRICTION, dt);
+                    hero.vy += GRAVITY * dt;
+                } else {
                     // Shell makes the turtle plummet hard for a ground slam.
                     hero.vy += GRAVITY * SHELL_GRAVITY_MULT * dt;
                     if (hero.vy > 0 && hero.vy < SHELL_FALL_MIN) hero.vy = SHELL_FALL_MIN;
-                } else {
-                    hero.vy += GRAVITY * dt;
                 }
+            } else {
+                let target = moveDir * (hero.onGround ? MOVE_SPEED : AIR_MOVE);
+                const accel = hero.onGround ? 2600 : AIR_ACCEL;
+                if (hero.vx < target) hero.vx = Math.min(target, hero.vx + accel * dt);
+                else hero.vx = Math.max(target, hero.vx - accel * dt);
+                if (moveDir === 0 && hero.onGround) hero.vx *= Math.pow(0.0008, dt);
+                hero.vy += GRAVITY * dt;
             }
             // Movement steers facing — but a sword swing keeps the facing the
             // tap chose, so a click commits the attack direction for that hit.
@@ -648,6 +661,7 @@
                         // Springy cap launches the turtle up and out of the shell.
                         hero.vy = -BOUNCE_V;
                         hero.onGround = false;
+                        hero.slamming = false;   // a bounce cancels a committed slam
                         p.bounce = 1;
                         SGSound.play("bounce");
                         host.vibrate(12);
@@ -669,6 +683,9 @@
             if (hero.onGround && !wasOnGround && hero.shell && fallVy >= SHELL_SLAM_MINVY) {
                 shellSlam();
             }
+            // The committed mid-air slam is done once it reaches the ground; from
+            // here the shell only stays tucked while the player holds the gesture.
+            if (hero.onGround && hero.slamming) hero.slamming = false;
 
             // Shell-drop: tuck on a platform and hold for a second to fall through.
             if (hero.shell && hero.onGround && standingPlatform) {
