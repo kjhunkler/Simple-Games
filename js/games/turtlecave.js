@@ -19,15 +19,21 @@
         const DASH_SPEED = 660;
         const DASH_TIME = 0.18;
         const DASH_CD = kids ? 0.4 : 0.55;
+        const DASH_JUMP_V = JUMP_V * 1.7;            // very high launch when jumping out of a dash
+        const DASH_JUMP_WINDOW = 0.12;               // grace after a dash ends to still dash-jump
         const ATTACK_DUR = 0.26;
         const SLASH_ACTIVE = 0.15;
-        const SLASH_RANGE = 66;                     // big sword reach
+        const SLASH_RANGE = 86;                     // big sword reach
         const SLASH_HEIGHT = 54;
         const SWORD_LUNGE_V = 300;                  // slight hop toward an out-of-reach foe
         const TARGET_RANGE = 520;                   // ignore auto-target foes farther than this
         const SPIN_DUR = 0.42;                       // 3rd combo hit: spin attack
         const SPIN_ACTIVE = 0.32;
-        const SPIN_RANGE = 82;                       // spin reaches both sides
+        const SPIN_RANGE = 107;                      // spin reaches both sides
+        const RISE_SLASH_DUR = 0.34;                 // dash-jump rising slash duration
+        const RISE_SLASH_ACTIVE = 0.28;              // active hit window of the rising slash
+        const RISE_RANGE = 76;                       // rising slash horizontal reach
+        const RISE_HEIGHT = 104;                     // rising slash tall vertical reach (anti-air)
         const COMBO_WINDOW = 0.5;                    // time to chain the next combo hit
         const STAR_SPEED = 580;
         const PLAYER_DMG = 1;                       // every attack = 1 heart
@@ -46,7 +52,7 @@
         const SHELL_FALL_MIN = 1150;                // shell plummets at least this fast
         const SHELL_GRAVITY_MULT = 1.7;             // extra gravity while shelled mid-air
         const SHELL_GROUND_FRICTION = 0.22;         // shelled slide drags to a gentle stop (retains momentum)
-        const SHELL_SLAM_MINVY = 680;               // fall speed needed to trigger a slam
+        const SHELL_SLAM_MINVY = 1400;              // fall speed needed to trigger a slam (above SHELL_FALL_MIN so a real dive is required)
         const SHELL_SLAM_RANGE = 100;               // slam shock radius
         const SHELL_SLAM_KNOCK = 320;               // slam knockback strength
         const GROUND_DASH_SPEED = 1500;             // swipe px/s that triggers a ground dash
@@ -222,7 +228,7 @@
                 dashTime: 0, dashCd: 0, dashIFrame: 0, dashUsed: false, dashHit: {},
                 shell: false, slamming: false, invuln: 0, shellHold: 0, fallThrough: 0, jumpsUsed: 0,
                 attackTime: 0, attackDur: ATTACK_DUR, attackCd: 0, slashId: 0,
-                comboStep: 0, comboTimer: 0, attackSpin: false, py: groundY, lunge: 0
+                comboStep: 0, comboTimer: 0, attackSpin: false, attackRise: false, dashJumpTime: 0, py: groundY, lunge: 0
             };
             if (!keepStats) {
                 hearts = MAX_HEARTS;
@@ -278,14 +284,35 @@
 
         function jump(leanX) {
             if (!alive || hero.shell) return;
+            // Jumping during a dash, or just after it, launches a high dash-jump.
+            const dashJumping = hero.dashTime > 0 || hero.dashJumpTime > 0;
             // First jump needs the ground; a second mid-air swipe double-jumps.
             if (hero.onGround) {
                 hero.jumpsUsed = 1;
             } else {
-                if (hero.jumpsUsed >= 2) return;
+                // A dash-jump is allowed mid-air (it spends the dash window);
+                // otherwise a second swipe double-jumps.
+                if (!dashJumping && hero.jumpsUsed >= 2) return;
                 hero.jumpsUsed += 1;
             }
             started = true;
+
+            if (dashJumping) {
+                // Rocketing out of a dash sends the turtle very high while
+                // keeping the dash's horizontal momentum for a soaring leap.
+                hero.dashTime = 0;            // end the dash so normal physics resume
+                hero.dashJumpTime = 0;
+                hero.vy = -DASH_JUMP_V;
+                if (leanX) hero.facing = leanX < 0 ? -1 : 1;
+                hero.onGround = false;
+                SGSound.play("jump");
+                puff(hero.x, hero.y, "#bde6ff", 14);
+                host.vibrate([8, 14, 10]);
+                // With a sword equipped the leap becomes a rising slash.
+                if (weapon === "sword") riseSlash();
+                return;
+            }
+
             hero.vy = -(hero.jumpsUsed >= 2 ? DOUBLE_JUMP_V : JUMP_V);
             // Lean the jump along the swipe: leanX is the swipe's horizontal
             // component (-1..1), so a more sideways swipe carries further across.
@@ -296,6 +323,20 @@
             hero.onGround = false;
             SGSound.play("jump");
             puff(hero.x, hero.y, "#cdebd6", hero.jumpsUsed >= 2 ? 10 : 6);
+        }
+
+        function riseSlash() {
+            // The rising slash launched from a dash-jump: a tall anti-air uppercut.
+            hero.comboStep = 0;
+            hero.comboTimer = 0;
+            hero.attackSpin = false;
+            hero.attackRise = true;
+            hero.slashId += 1;
+            hero.attackDur = RISE_SLASH_DUR;
+            hero.attackTime = RISE_SLASH_DUR;
+            hero.attackCd = 0.3;
+            SGSound.play("whack");
+            host.vibrate([10, 16, 10]);
         }
 
         function startDash(dx, dy) {
@@ -310,6 +351,7 @@
             hero.dashCd = DASH_CD;
             hero.dashIFrame = dur + 0.06;
             hero.dashUsed = true;
+            hero.dashJumpTime = DASH_TIME + DASH_JUMP_WINDOW;   // brief window to jump out of the dash
             hero.dashHit = {};      // a fresh dash can damage each enemy once
             if (dx !== 0) hero.facing = dx < 0 ? -1 : 1;
             SGSound.play("flap");
@@ -341,6 +383,7 @@
                 const chained = hero.comboTimer > 0 && hero.comboStep < 3;
                 hero.comboStep = chained ? hero.comboStep + 1 : 1;
                 hero.attackSpin = hero.comboStep === 3;
+                hero.attackRise = false;
                 hero.slashId += 1;
                 if (hero.attackSpin) {
                     hero.attackDur = SPIN_DUR;
@@ -569,6 +612,7 @@
                     hero.comboStep = 0;
                     hero.comboTimer = 0;
                     hero.attackSpin = false;
+                    hero.attackRise = false;
                     SGSound.play("bounce");
                 }
                 // A committed slam stays tucked until it lands; otherwise the
@@ -708,6 +752,7 @@
                 if (hero.comboTimer <= 0) hero.comboStep = 0;   // combo expired
             }
             if (hero.dashCd > 0) hero.dashCd -= dt;
+            if (hero.dashJumpTime > 0) hero.dashJumpTime -= dt;
             if (hero.dashIFrame > 0) hero.dashIFrame -= dt;
 
             // A sword dash slices through enemies, dealing damage and knockback.
@@ -737,15 +782,30 @@
             }
 
             // Sword strike: normal hits reach in front; the spin finisher hits
-            // a wider arc on BOTH sides. Each enemy is hit once per swing.
+            // a wider arc on BOTH sides; the dash-jump rising slash reaches tall
+            // overhead. Each enemy is hit once per swing.
             const spin = hero.attackSpin;
-            const activeWin = spin ? SPIN_ACTIVE : SLASH_ACTIVE;
+            const rise = hero.attackRise;
+            const activeWin = rise ? RISE_SLASH_ACTIVE : (spin ? SPIN_ACTIVE : SLASH_ACTIVE);
             if (weapon === "sword" && hero.attackTime > hero.attackDur - activeWin) {
-                const range = spin ? SPIN_RANGE : SLASH_RANGE;
-                const sx = spin ? hero.x - range : (hero.facing > 0 ? hero.x : hero.x - range);
-                const sw = spin ? range * 2 : range;
-                const sy = hero.y - hero.h - (spin ? 14 : 6);
-                const sh = spin ? SLASH_HEIGHT + 16 : SLASH_HEIGHT;
+                let sx, sw, sy, sh;
+                if (rise) {
+                    // Tall column in front for an anti-air uppercut.
+                    sw = RISE_RANGE;
+                    sx = hero.facing > 0 ? hero.x - 14 : hero.x - sw + 14;
+                    sh = RISE_HEIGHT;
+                    sy = hero.y - sh;
+                } else if (spin) {
+                    sw = SPIN_RANGE * 2;
+                    sx = hero.x - SPIN_RANGE;
+                    sy = hero.y - hero.h - 14;
+                    sh = SLASH_HEIGHT + 16;
+                } else {
+                    sw = SLASH_RANGE;
+                    sx = hero.facing > 0 ? hero.x : hero.x - SLASH_RANGE;
+                    sy = hero.y - hero.h - 6;
+                    sh = SLASH_HEIGHT;
+                }
                 const sb = { x: sx, y: sy, w: sw, h: sh };
                 for (const e of enemies) {
                     if (e.lastHitSlash === hero.slashId) continue;
@@ -1467,74 +1527,194 @@
             if (flashing) ctx.globalAlpha = 0.35;
             if (hero.dashIFrame > 0) ctx.globalAlpha = Math.min(ctx.globalAlpha, 0.7);
 
+            // Drawn a touch larger than the hitbox so the turtle reads clearly.
+            // Attack arcs below stay in world space, so true ranges are unchanged.
+            ctx.scale(1.53, 1.53);
+
             const cx = 0;
-            const midY = -hero.h / 2;
+
+            // Shared palette for the turtle.
+            const skin = "#8fd6a0";
+            const skinDark = "#63b07c";
+            const shellMid = "#2e9e5b";
+            const shellDark = "#1f7d44";
+            const shellRim = "#1a6b3a";
+            const shellLight = "#5fc487";
+            const belly = "#e9dca6";
+            const bellyLine = "#cdbd86";
+            const band = "#d65a4f";        // cloth accent for wrist / knee wraps
+            const belt = "#1f6b3c";        // dark-green belt / sash
+            const beltDark = "#114d29";
 
             if (hero.shell) {
-                // Tucked in: armoured dome, no limbs, spinning shell pattern.
-                ctx.fillStyle = "#1f7d44";
+                // Tucked in: a domed carapace resting on the ground (base at y=0).
+                const rx = hero.w / 2 + 4;
+                const ry = hero.h / 2 + 4;
+                ctx.fillStyle = shellRim;
                 ctx.beginPath();
-                ctx.ellipse(cx, midY, hero.w / 2 + 2, hero.h / 2 + 4, 0, Math.PI, 0, false);
+                ctx.ellipse(cx, 0, rx, ry, 0, Math.PI, 0, false);
                 ctx.fill();
-                ctx.fillStyle = "#2e9e5b";
+                ctx.fillStyle = shellMid;
                 ctx.beginPath();
-                ctx.ellipse(cx, midY, hero.w / 2 - 4, hero.h / 2, 0, Math.PI, 0, false);
+                ctx.ellipse(cx, 0, rx - 2.5, ry - 2, 0, Math.PI, 0, false);
                 ctx.fill();
-                ctx.strokeStyle = "#1a6b3a";
-                ctx.lineWidth = 2;
+                // Central scute ridge.
+                ctx.fillStyle = shellDark;
                 ctx.beginPath();
-                ctx.arc(cx, midY, 6, 0, Math.PI * 2);
-                ctx.stroke();
+                ctx.ellipse(cx, -1, 6, ry - 7, 0, Math.PI, 0, false);
+                ctx.fill();
+                // Pale plastron along the base.
+                ctx.fillStyle = belly;
+                roundRect(cx - rx + 5, -3, (rx - 5) * 2, 3, 1.5);
+                // Highlight.
+                ctx.fillStyle = shellLight;
+                ctx.beginPath();
+                ctx.ellipse(cx - 7, -ry * 0.5, 4, 2.4, -0.5, 0, Math.PI * 2);
+                ctx.fill();
             } else {
+                // ----- Upright, bipedal ninja-turtle stance -----
                 ctx.scale(hero.facing, 1);
-                const step = Math.sin(hero.walk) * (hero.onGround ? 4 : 0);
-                // legs
-                ctx.fillStyle = "#8fd6a0";
-                roundRect(-10, -8 + step, 8, 9, 3);
-                roundRect(4, -8 - step, 8, 9, 3);
-                // head
-                ctx.fillStyle = "#8fd6a0";
+                const onG = hero.onGround;
+                const runPhase = Math.sin(hero.walk);                        // run cycle
+                const bob = (onG && Math.abs(hero.vx) < 20) ? Math.sin(time * 3) * 0.6 : 0;  // idle breathing
+                // Legs pivot from the hip: on the ground they scissor through the
+                // run cycle; airborne they hold a slight leaping split.
+                const backAng = onG ? runPhase * 0.6 : 0.4;
+                const frontAng = onG ? -runPhase * 0.6 : -0.5;
+                const hipY = -11;
+
+                // ===== back limbs (behind the torso) =====
+                ctx.save();
+                ctx.translate(1, hipY);
+                ctx.rotate(backAng);
+                ctx.fillStyle = skinDark;
+                roundRect(-3, 0, 6, 10, 3);                                 // back leg
+                roundRect(-3, 8, 9, 4, 2);                                  // back foot
+                ctx.restore();
+                ctx.strokeStyle = skinDark; ctx.lineWidth = 5; ctx.lineCap = "round";
                 ctx.beginPath();
-                ctx.arc(hero.w / 2 - 4, -hero.h + 12, 8, 0, Math.PI * 2);
+                ctx.moveTo(-3, -21 + bob);
+                ctx.lineTo(-8, -14 + bob);                                  // back arm
+                ctx.stroke();
+
+                // ===== shell (carapace) carried on the back =====
+                ctx.save();
+                ctx.translate(-3, -16.5 + bob);
+                ctx.fillStyle = shellRim;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 12, 10, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = shellMid;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 10, 8.2, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // central scute
+                ctx.fillStyle = shellDark;
+                ctx.beginPath();
+                ctx.ellipse(-1, 0, 4, 5, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // surrounding scute plates
+                for (let i = 0; i < 5; i++) {
+                    const a = (i / 5) * Math.PI * 2 + 0.4;
+                    ctx.beginPath();
+                    ctx.ellipse(Math.cos(a) * 6.5 - 1, Math.sin(a) * 5.4, 2, 2, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                // highlight
+                ctx.fillStyle = shellLight;
+                ctx.beginPath();
+                ctx.ellipse(-4.5, -4.5, 3, 2, -0.5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                // ===== front leg =====
+                ctx.save();
+                ctx.translate(4, hipY);
+                ctx.rotate(frontAng);
+                ctx.fillStyle = skin;
+                roundRect(-3, 0, 6, 10, 3);                                 // front leg
+                roundRect(-3, 8, 10, 4, 2);                                 // front foot
+                ctx.restore();
+
+                // ===== torso with plastron (belly) =====
+                ctx.fillStyle = skin;
+                roundRect(-3, -24 + bob, 12, 16, 6);
+                ctx.fillStyle = belly;
+                roundRect(0, -23 + bob, 8, 14, 5);
+                ctx.strokeStyle = bellyLine; ctx.lineWidth = 1;
+                for (let i = 1; i <= 3; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(1, -23 + bob + i * 3.4);
+                    ctx.lineTo(7, -23 + bob + i * 3.4);
+                    ctx.stroke();
+                }
+
+                // ===== belt / sash =====
+                ctx.fillStyle = belt;
+                roundRect(-3, -12.5 + bob, 12, 3, 1);
+                ctx.fillStyle = beltDark;
+                roundRect(4, -13 + bob, 3, 4.5, 1);                        // knot
+
+                // ===== head =====
+                const hx = 3, hy = -29 + bob;
+                ctx.fillStyle = skin;
+                ctx.beginPath();
+                ctx.arc(hx, hy, 7.5, 0, Math.PI * 2);
+                ctx.fill();
+                // jaw / beak hint
+                ctx.fillStyle = skinDark;
+                roundRect(hx + 3.5, hy + 1.5, 5, 4, 2);
+                // eyes
+                ctx.fillStyle = "#ffffff";
+                ctx.beginPath();
+                ctx.ellipse(hx + 1.5, hy - 1.5, 2.5, 3, 0, 0, Math.PI * 2);
+                ctx.ellipse(hx + 6, hy - 1.5, 2.5, 3, 0, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.fillStyle = "#1c2030";
                 ctx.beginPath();
-                ctx.arc(hero.w / 2 - 1, -hero.h + 10, 2, 0, Math.PI * 2);
+                ctx.arc(hx + 2.3, hy - 1.2, 1.2, 0, Math.PI * 2);
+                ctx.arc(hx + 6.8, hy - 1.2, 1.2, 0, Math.PI * 2);
                 ctx.fill();
-                // shell
-                ctx.fillStyle = "#2e9e5b";
-                ctx.beginPath();
-                ctx.ellipse(-2, -hero.h / 2 - 1, hero.w / 2, hero.h / 2 + 4, 0, Math.PI, 0, false);
-                ctx.fill();
-                ctx.fillStyle = "#1f7d44";
-                for (let i = -1; i <= 1; i++) {
-                    ctx.beginPath();
-                    ctx.arc(-2 + i * 9, -hero.h / 2 - 1, 4, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-                // Weapon held in the front hand reflects the equipped gear.
+
+                // ===== front arm + equipped weapon =====
+                const shx = 6, shy = -20 + bob;        // front shoulder pivot
                 if (weapon === "sword") {
-                    // sword in the front hand — animation differs per combo step
-                    let blade = 0;       // shoulder rotation of the sword
+                    // The arm + sword swing as one piece; the swing maths are
+                    // unchanged so the slash visuals stay perfectly in sync.
+                    let blade;
                     if (hero.attackTime > 0) {
                         const prog = 1 - hero.attackTime / hero.attackDur;
                         if (hero.attackSpin) {
                             blade = -1.1 + prog * Math.PI * 2;          // full spin
+                        } else if (hero.attackRise) {
+                            blade = 1.4 - prog * 3.0;                    // rising uppercut
                         } else if (hero.comboStep === 2) {
                             blade = 1.1 - prog * 2.0;                    // upward back-swing
                         } else {
                             blade = -1.1 + prog * 2.0;                   // downward chop
                         }
                     } else {
-                        blade = -1.1;
+                        blade = -0.7;                                    // ready stance
                     }
                     ctx.save();
-                    ctx.translate(hero.w / 2 - 2, -10);
+                    ctx.translate(shx, shy);
                     ctx.rotate(blade);
+                    // forearm
+                    ctx.strokeStyle = skin; ctx.lineWidth = 5; ctx.lineCap = "round";
+                    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(11, 0); ctx.stroke();
+                    // wrist wrap
+                    ctx.strokeStyle = band; ctx.lineWidth = 5;
+                    ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(11.5, 0); ctx.stroke();
+                    // sword
+                    ctx.translate(12, 0);
                     ctx.fillStyle = "#cfd8e6";
                     roundRect(0, -3, 24, 5, 2);
+                    ctx.fillStyle = "#aeb8c8";
+                    roundRect(1, -1, 21, 1.4, 1);                        // blade fuller
                     ctx.fillStyle = "#ffd166";
-                    roundRect(-4, -4, 5, 7, 2);
+                    roundRect(-4, -4, 5, 8, 2);                          // guard
+                    ctx.fillStyle = "#b9892f";
+                    roundRect(-7, -2, 4, 4, 2);                          // pommel
                     ctx.restore();
                 } else {
                     // A throwing star spins in the front hand; a tap flicks it forward.
@@ -1543,21 +1723,44 @@
                         const prog = 1 - hero.attackTime / hero.attackDur;
                         reach = Math.sin(prog * Math.PI) * 8;
                     }
+                    const hxw = shx + 9 + reach, hyw = shy + 5;          // hand position
+                    ctx.strokeStyle = skin; ctx.lineWidth = 5; ctx.lineCap = "round";
+                    ctx.beginPath(); ctx.moveTo(shx, shy); ctx.lineTo(hxw, hyw); ctx.stroke();
+                    ctx.strokeStyle = band; ctx.lineWidth = 5;
+                    ctx.beginPath(); ctx.moveTo(hxw - 2, hyw - 1); ctx.lineTo(hxw, hyw); ctx.stroke();
                     ctx.fillStyle = "#ffe08a";
-                    drawStarShape(hero.w / 2 - 2 + reach, -10, 7, time * 8);
+                    drawStarShape(hxw + 2, hyw, 6, time * 8);
+                    ctx.fillStyle = "#bda23a";
+                    ctx.beginPath(); ctx.arc(hxw + 2, hyw, 1.5, 0, Math.PI * 2); ctx.fill();
                 }
             }
             ctx.restore();
 
             // Sword slash arc (world space). Each combo step looks different;
             // the third hit is a full spin that sweeps both sides.
-            const slashWin = hero.attackSpin ? SPIN_ACTIVE : SLASH_ACTIVE;
+            const slashWin = hero.attackRise ? RISE_SLASH_ACTIVE : (hero.attackSpin ? SPIN_ACTIVE : SLASH_ACTIVE);
             if (weapon === "sword" && hero.attackTime > hero.attackDur - slashWin && !hero.shell) {
                 const prog = 1 - (hero.attackTime - (hero.attackDur - slashWin)) / slashWin;
                 ctx.save();
                 ctx.translate(hero.x, hero.y - hero.h / 2);
                 ctx.lineCap = "round";
-                if (hero.attackSpin) {
+                if (hero.attackRise) {
+                    // Rising slash: a tall crescent sweeping upward in front.
+                    ctx.scale(hero.facing, 1);
+                    ctx.globalAlpha = 0.7 * (1 - prog);
+                    ctx.strokeStyle = "#eaf2ff";
+                    ctx.lineWidth = 8;
+                    ctx.beginPath();
+                    ctx.arc(0, -10, RISE_HEIGHT * 0.5, 1.5 - prog * 0.9, -1.6 - prog * 0.9, true);
+                    ctx.stroke();
+                    ctx.globalAlpha = 0.5 * (1 - prog);
+                    ctx.strokeStyle = "#fff2c2";
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(10, 16);
+                    ctx.lineTo(-2, -RISE_HEIGHT * 0.62);
+                    ctx.stroke();
+                } else if (hero.attackSpin) {
                     // Spin: a bright ring that whips all the way around.
                     const rad = SPIN_RANGE - 12;
                     const a0 = -Math.PI / 2 + prog * Math.PI * 2;
