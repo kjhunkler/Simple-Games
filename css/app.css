@@ -363,6 +363,7 @@ body {
     min-height: 150px;
     transition: transform 90ms ease;
     text-align: left;
+    position: relative;
 }
 .game-card:active { transform: scale(0.96); }
 
@@ -370,6 +371,25 @@ body {
 .game-name { font-weight: 800; font-size: 17px; margin-top: 4px; }
 .game-tag { color: var(--muted); font-size: 12px; line-height: 1.35; }
 .game-best { color: var(--gold); font-size: 13px; font-weight: 700; margin-top: auto; }
+
+.game-share {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+    border-radius: 50%;
+    background: var(--card-2);
+    border: 1px solid var(--card);
+    cursor: pointer;
+    transition: transform 90ms ease, background 120ms ease;
+}
+.game-share:active { transform: scale(0.88); background: var(--accent); }
 
 /* ---------- Game screen ---------- */
 .game-screen {
@@ -473,9 +493,9 @@ body {
     to   { opacity: 1; transform: scale(1); }
 }
 
-#overlay-emoji { font-size: 52px; line-height: 1; }
-#overlay-title { margin: 0; font-size: 24px; font-weight: 800; }
-#overlay-text { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.5; white-space: pre-line; }
+#overlay-emoji, .overlay-emoji { font-size: 52px; line-height: 1; }
+#overlay-title, .overlay-title { margin: 0; font-size: 24px; font-weight: 800; }
+#overlay-text, .overlay-text { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.5; white-space: pre-line; }
 
 .badge-new {
     background: linear-gradient(135deg, var(--gold), #ffb347);

@@ -9,7 +9,7 @@
         const kids = !!host.kids;
 
         // ----- tuning -----
-        const MAX_HEARTS = kids ? 5 : 3;
+        const MAX_HEARTS = kids ? 10 : 5;
         const HIT_INVULN = 5;                       // seconds of mercy after a hit
         const GRAVITY = 2100;
         const MOVE_SPEED = 220;
@@ -55,6 +55,7 @@
         const SHELL_SLAM_MINVY = 1400;              // fall speed needed to trigger a slam (above SHELL_FALL_MIN so a real dive is required)
         const SHELL_SLAM_RANGE = 100;               // slam shock radius
         const SHELL_SLAM_KNOCK = 320;               // slam knockback strength
+        const SHELL_SLAM_SPEED = 1900;              // swipe px/s needed for an airborne dive-tuck (slam); ground tucks stay distance-based
         // Adult-mode shell stamina: tucking drains the bar (empty after 5s); it
         // passively refills at half that rate (full again 10s after running dry),
         // acting as a cooldown so the shell can't be held indefinitely. Once it
@@ -64,7 +65,7 @@
         const SHELL_DRAIN = 1 / 5;                   // per-second drain while shelled
         const SHELL_RECHARGE = SHELL_DRAIN / 2;      // per-second passive refill
         const SHELL_REARM = 0.3;                     // lockout lifts once the bar refills this far
-        const GROUND_DASH_SPEED = 1500;             // swipe px/s that triggers a ground dash
+        const GROUND_DASH_SPEED = 2100;             // swipe px/s that triggers a ground dash (fast flick only)
 
         // ----- gesture thresholds -----
         const MOVE_THRESH = 16;
@@ -3512,7 +3513,9 @@
                         if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(dir, 0);
                         touchMoveDir = dir; moveId = id; p.mode = "move";
                         p.anchorY = y;
-                    } else if (dy > SWIPE_THRESH) {
+                    } else if (dy > SWIPE_THRESH && (hero.onGround || flickSpeed > SHELL_SLAM_SPEED)) {
+                        // Grounded tuck is distance-only (defense); a mid-air dive-tuck
+                        // needs a fast flick so a slam isn't triggered by a slow drag.
                         touchShell = true; shellId = id; p.mode = "shell"; p.anchorY = y;
                     }
                 }
@@ -3528,7 +3531,9 @@
                     // requires lifting and swiping up again, so don't jump in mid-air here.
                     if (hero.onGround) jump(touchMoveDir);
                     p.anchorY = y;
-                } else if (vDown > SWIPE_THRESH * 1.4) {
+                } else if (vDown > SWIPE_THRESH * 1.4 && (hero.onGround || flickSpeed > SHELL_SLAM_SPEED)) {
+                    // On the ground this is a defensive tuck; in the air it's a dive-tuck
+                    // that slams on landing, so require a fast downward flick there.
                     touchShell = true; shellId = id;
                     if (moveId === id) { moveId = null; touchMoveDir = 0; }
                     p.mode = "shell"; p.anchorY = y;
@@ -3544,8 +3549,9 @@
                 // trails the finger up to its peak so only a deliberate dive down
                 // (or sideways flick) triggers the next action.
                 const vDown = y - p.anchorY;
-                if (vDown > SWIPE_THRESH * 1.4) {
-                    // Tuck into the shell mid-air; the hard landing slams.
+                if (vDown > SWIPE_THRESH * 1.4 && flickSpeed > SHELL_SLAM_SPEED) {
+                    // Tuck into the shell mid-air; the hard landing slams. Require a
+                    // fast dive so a gentle downward drift doesn't trigger a slam.
                     touchShell = true; shellId = id;
                     if (moveId === id) { moveId = null; touchMoveDir = 0; }
                     p.mode = "shell"; p.anchorY = y;

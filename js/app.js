@@ -29,6 +29,7 @@
     let kidsModeSelected = false;
     let currentGameDef = null;
     let currentGame = null;
+    let currentScore = 0;
     let deleteArmed = false;
 
     /* ---------- Navigation ---------- */
@@ -178,6 +179,44 @@
         show("profiles");
     }
 
+    /* ---------- Share high score ---------- */
+    const SHARE_LINK = "https://kjhunkler.github.io/Simple-Games/";
+
+    // Opens the device's SMS composer with a pre-filled brag message so the
+    // player can choose a recipient and text their best score for this game.
+    function shareScore(def, best) {
+        const unit = def.scoreLabel ? " " + def.scoreLabel : "";
+        const message =
+            "\u{1F3C6} I scored " + best + unit + " in " + def.name +
+            " on Simple Games! Think you can beat me? Play here: " + SHARE_LINK;
+        SGSound.play("tap");
+        vibrate(10);
+        // Leaving the recipient blank lets the native messaging app pick a
+        // contact. The "?&" prefix keeps the body working on both iOS & Android.
+        window.location.href = "sms:?&body=" + encodeURIComponent(message);
+    }
+
+    // Adds a tappable "text my score" badge to a game card. Stops the click from
+    // bubbling so it shares instead of launching the game underneath it.
+    function addShareButton(card, def, best) {
+        const share = document.createElement("span");
+        share.className = "game-share";
+        share.setAttribute("role", "button");
+        share.setAttribute("tabindex", "0");
+        share.setAttribute("aria-label", "Text my " + def.name + " high score");
+        share.textContent = "\u{1F4F2}";
+        const fire = (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            shareScore(def, best);
+        };
+        share.addEventListener("click", fire);
+        share.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") fire(e);
+        });
+        card.appendChild(share);
+    }
+
     /* ---------- Home screen ---------- */
     function renderHome() {
         const profile = SGStorage.getActiveProfile();
@@ -216,6 +255,8 @@
                 }
                 startGame(id);
             });
+            // Once there's a score worth bragging about, offer a quick text share.
+            if (best > 0) addShareButton(card, def, best);
             grid.appendChild(card);
         }
     }
@@ -225,6 +266,7 @@
         canvas: null,
         kids: false,
         setScore(score) {
+            currentScore = score;
             $("#game-score").textContent = score;
         },
         vibrate: vibrate,
@@ -233,12 +275,20 @@
             const isNewBest = profile ? SGStorage.submitScore(profile.id, currentGameDef.id, score) : false;
             const best = profile ? SGStorage.getBestScore(profile.id, currentGameDef.id) : score;
 
+            currentScore = score;
             SGSound.play(isNewBest ? "highscore" : "gameover");
             $("#overlay-emoji").textContent = isNewBest ? "\u{1F3C6}" : currentGameDef.emoji;
             $("#overlay-title").textContent = isNewBest ? "New Best!" : "Game Over";
             $("#overlay-text").textContent =
                 "You scored " + score + " " + currentGameDef.scoreLabel + ".\nBest: " + best;
             $("#overlay-badge").classList.toggle("hidden", !isNewBest);
+
+            // Offer to text the result once there's a score worth sharing.
+            const shareBtn = $("#btn-overlay-share");
+            const def = currentGameDef;
+            shareBtn.classList.toggle("hidden", score <= 0);
+            shareBtn.onclick = () => shareScore(def, score);
+
             $("#game-overlay").classList.remove("hidden");
         }
     };
@@ -258,6 +308,7 @@
         gameHost.setScore(0);
         updateGameBestLabel();
         $("#game-overlay").classList.add("hidden");
+        $("#game-confirm").classList.add("hidden");
         show("game");
         vibrate(10);
 
@@ -286,8 +337,37 @@
     function exitToHome() {
         stopGame();
         $("#game-overlay").classList.add("hidden");
+        $("#game-confirm").classList.add("hidden");
         renderHome();
         show("home");
+    }
+
+    // The header back arrow. If a run is still in progress, confirm first so the
+    // player doesn't lose their game by accident. If the game already ended (the
+    // game-over overlay is up) the score is recorded, so just leave.
+    function requestExit() {
+        const gameOverShowing = !$("#game-overlay").classList.contains("hidden");
+        if (!currentGame || gameOverShowing) {
+            exitToHome();
+            return;
+        }
+        SGSound.play("tap");
+        vibrate(8);
+        $("#game-confirm").classList.remove("hidden");
+    }
+
+    // Confirmed quitting mid-game: record the current score (so a run that beat
+    // the player's best still counts) before heading home.
+    function confirmExit() {
+        const profile = SGStorage.getActiveProfile();
+        if (profile && currentGameDef) {
+            const isNewBest = SGStorage.submitScore(profile.id, currentGameDef.id, currentScore);
+            if (isNewBest) {
+                SGSound.play("highscore");
+                toast("\u{1F3C6} New best saved: " + currentScore);
+            }
+        }
+        exitToHome();
     }
 
     /* ---------- Wire up events ---------- */
@@ -326,7 +406,12 @@
         show("profiles");
     });
 
-    $("#btn-exit-game").addEventListener("click", exitToHome);
+    $("#btn-exit-game").addEventListener("click", requestExit);
+    $("#btn-confirm-quit").addEventListener("click", confirmExit);
+    $("#btn-confirm-stay").addEventListener("click", () => {
+        $("#game-confirm").classList.add("hidden");
+        SGSound.play("tap");
+    });
     $("#btn-overlay-home").addEventListener("click", exitToHome);
     $("#btn-overlay-retry").addEventListener("click", () => {
         $("#game-overlay").classList.add("hidden");
