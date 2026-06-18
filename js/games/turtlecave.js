@@ -9,7 +9,7 @@
         const kids = !!host.kids;
 
         // ----- tuning -----
-        const MAX_HEARTS = kids ? 10 : 5;
+        const MAX_HEARTS = kids ? 5 : 3;
         const HIT_INVULN = 5;                       // seconds of mercy after a hit
         const GRAVITY = 2100;
         const MOVE_SPEED = 220;
@@ -41,7 +41,7 @@
         const ENEMY_SPEED = kids ? 0.7 : 1;
         const TELEGRAPH = kids ? 1.0 : 0.72;        // obvious wind-up time
         const ENEMY_RECOVER = 0.45;
-        const ENEMY_COOLDOWN = kids ? 2.6 : 1.9;    // long delay between attacks
+        const ENEMY_COOLDOWN = kids ? 2.6 : 1.9 * 1.3;    // long delay between attacks (adult mode +30%)
         const CHASE_RANGE = 250;
         const DASH_DMG_KNOCK = 360;                 // sideways knockback a dash deals
         const ENEMY_POP = 150;                      // upward pop when an enemy is dash-hit
@@ -55,6 +55,15 @@
         const SHELL_SLAM_MINVY = 1400;              // fall speed needed to trigger a slam (above SHELL_FALL_MIN so a real dive is required)
         const SHELL_SLAM_RANGE = 100;               // slam shock radius
         const SHELL_SLAM_KNOCK = 320;               // slam knockback strength
+        // Adult-mode shell stamina: tucking drains the bar (empty after 5s); it
+        // passively refills at half that rate (full again 10s after running dry),
+        // acting as a cooldown so the shell can't be held indefinitely. Once it
+        // bottoms out the shell locks until the bar partially recovers, so the
+        // player can dip back in without waiting for a full recharge. Kids mode
+        // has no limit.
+        const SHELL_DRAIN = 1 / 5;                   // per-second drain while shelled
+        const SHELL_RECHARGE = SHELL_DRAIN / 2;      // per-second passive refill
+        const SHELL_REARM = 0.3;                     // lockout lifts once the bar refills this far
         const GROUND_DASH_SPEED = 1500;             // swipe px/s that triggers a ground dash
 
         // ----- gesture thresholds -----
@@ -62,8 +71,12 @@
         const SWIPE_THRESH = 38;
         const TAP_MAX_MOVE = 16;
         const TAP_MAX_TIME = 260;
-        const DASH_X_DOMINANCE = 1.7;                // a dash/move swipe must be this much more horizontal than vertical (~30°); steeper swipes jump/shell
-        const JUMP_LEAN = 0.55;                      // how much sideways speed a leaning jump gets
+        const DASH_X_DOMINANCE = 1.7;                // a flat/downward swipe must be this much more horizontal than vertical (~30°) to dash; steeper goes to shell
+        const DASH_X_DOMINANCE_UP = 3.73;            // upward swipes must be within ~15° of horizontal to dash; steeper rising flicks become an angled jump
+        const JUMP_STEEP_DOMINANCE = 2.14;           // a rising swipe steeper than ~65° (near vertical) is a straight jump; shallower is an angled jump
+        const DASH_COMMIT_DIST = 30;                 // a rising swipe must travel this far horizontally before a dash commits, so its true angle is settled first
+        const JUMP_LEAN = 0.55;                      // how much sideways speed a straight (near-vertical) jump gets
+        const JUMP_LEAN_DIAG = 1.15;                 // extra-strong sideways carry for an angled jump swipe
 
         // Each cave level recolours the cave a little.
         const BG_PALETTES = [
@@ -95,8 +108,8 @@
         // ----- boss roster -----
         // Each boss has a distinct silhouette, palette, movement style and a set
         // of attacks. The flying wyvern hovers out of melee reach, nudging the
-        // player toward throwing stars. Order cycles by level.
-        const BOSS_ORDER = ["golem", "warbot", "marshking", "prowler", "wyvern", "siegebot", "stormwyvern"];
+        // player toward throwing stars. The encounter order is shuffled per run.
+        const BOSS_ORDER = ["golem", "warbot", "marshking", "prowler", "wyvern", "siegebot", "stormwyvern", "broodmother"];
         const BOSSES = {
             golem: {
                 name: "CAVE GOLEM", w: 100, h: 110, flying: false,
@@ -105,10 +118,18 @@
                 attacks: ["slam", "boulder"]
             },
             marshking: {
-                name: "MARSH KING", w: 96, h: 96, flying: false,
+                name: "MARSH KING", w: 96, h: 96, flying: false, shape: "toadking", variant: "toad",
                 body: "#5a8f6a", bodyLit: "#bfe8c8", trim: "#33543c", eye: "#d6ff8a",
                 speed: 52, hpMul: 1.0, contactKnock: 300,
                 attacks: ["hop", "spit"]
+            },
+            broodmother: {
+                // Swollen plague-toad: a venomous sibling of the marsh king that
+                // carries glowing spore-eggs on its back and leans on poison sprays.
+                name: "MIRE BROODMOTHER", w: 104, h: 100, flying: false, shape: "toadking", variant: "plague",
+                body: "#6a4f86", bodyLit: "#c8a6e6", trim: "#3c2c50", eye: "#caff5a",
+                speed: 44, hpMul: 1.2, contactKnock: 320,
+                attacks: ["spit", "hop"]
             },
             // ----- The robot family: one chassis, three loadouts -----
             warbot: {
@@ -147,14 +168,27 @@
         };
         const BOSS_ENRAGE = 0.4;                     // below this HP fraction the boss enrages
 
+        // Build a fresh, randomized boss sequence for a run. Fisher–Yates shuffle
+        // of a copy of BOSS_ORDER so each playthrough meets the bosses in a new
+        // order; cycles back through the same shuffle if a run runs past the roster.
+        function shuffleBossOrder() {
+            const a = BOSS_ORDER.slice();
+            for (let i = a.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+            }
+            bossOrder = a;
+        }
+
         let W, H, groundY, ceilingY;
         let camX;
         let levelLength, level;
-        let hero, platforms, enemies, gems, drops, stars, orbs, particles, bolts, chest, stalactites, ceilingDecor;
+        let hero, platforms, plateaus, enemies, gems, drops, stars, orbs, particles, bolts, chest, stalactites, ceilingDecor, decor;
         let pal;
         let amb, motes;                             // ambient biome flavour + drifting motes
         let enemyIdSeq = 0;
         let boss, bossSpawned, levelAdvance, victory;
+        let bossOrder = null;                       // shuffled boss sequence for this run
         let hearts, score, weapon, alive, started;
         let bannerText, bannerTime;
         let time, rafId, lastTs;
@@ -184,6 +218,7 @@
                 groundY = newGround;
                 if (hero) hero.y += dy;
                 if (platforms) platforms.forEach(p => p.y += dy);
+                if (plateaus) plateaus.forEach(pl => pl.top += dy);
                 if (enemies) enemies.forEach(e => { e.baseY += dy; if (e.flying) e.hoverY += dy; });
                 if (gems) gems.forEach(g => g.y += dy);
                 if (drops) drops.forEach(d => d.y += dy);
@@ -216,6 +251,7 @@
             amb = AMBIENCE[(level - 1) % AMBIENCE.length];
             buildMotes();
             platforms = [];
+            plateaus = [];
             enemies = [];
             gems = [];
             drops = [];
@@ -225,6 +261,7 @@
             particles = [];
             stalactites = [];
             ceilingDecor = [];
+            decor = [];
             chest = null;
             boss = null;
             bossSpawned = false;
@@ -233,12 +270,30 @@
 
             const types = ["zombie", "marsh", "robot"];
 
+            // Raised floor sections — plateaus the turtle can run up and over.
+            // Each has sloped ramps on both sides so walkers and the hero climb
+            // them naturally; groundAt() reads their profile for all physics.
+            let plx = 700;
+            while (plx < levelLength - 820) {
+                if (Math.random() < 0.5) {
+                    const rise = 56 + Math.random() * 74;      // how tall the step is
+                    const ramp = 72 + Math.random() * 46;      // sloped approach run
+                    const flat = 150 + Math.random() * 230;    // flat top width
+                    const w = ramp * 2 + flat;
+                    plateaus.push({ x: plx, w: w, ramp: ramp, top: groundY - rise });
+                    plx += w + 280 + Math.random() * 360;
+                } else {
+                    plx += 360 + Math.random() * 300;
+                }
+            }
+
             // Floating stone ledges with the odd gem or perched enemy.
             let px = 460;
             let platId = 1;
             while (px < levelLength - 520) {
                 const pw = 92 + Math.random() * 78;
-                const py = groundY - (74 + Math.random() * (H * 0.26));
+                // Float above the local terrain so ledges always clear plateaus.
+                const py = groundAt(px + pw / 2) - (74 + Math.random() * (H * 0.26));
                 platforms.push({ id: platId++, x: px, y: py, w: pw, h: 16, mushroom: false, bounce: 0 });
                 if (Math.random() < 0.7) gems.push(makeGem(px + pw / 2, py - 26));
                 if (Math.random() < 0.34) {
@@ -252,7 +307,7 @@
             // the turtle skyward.
             let mx = 720;
             while (mx < levelLength - 560) {
-                if (Math.random() < 0.5) {
+                if (!onPlateau(mx) && Math.random() < 0.5) {
                     const mw = 70 + Math.random() * 26;
                     platforms.push({ id: platId++, x: mx, y: groundY - 50, w: mw, h: 18, mushroom: true, bounce: 0 });
                 }
@@ -274,15 +329,22 @@
             }
 
             // Decoration buried in the dark soil above the ceiling: bones and
-            // the occasional half-buried treasure chest.
+            // the occasional half-buried treasure chest. Bones are sparse so they
+            // stay a rare, eerie detail rather than a constant fixture.
             let dx2 = 240;
             while (dx2 < levelLength - 120) {
                 const r = Math.random();
-                const kind = r < 0.18 ? "chest" : "bone";
-                ceilingDecor.push({
-                    x: dx2, y: ceilingY * (0.3 + Math.random() * 0.5),
-                    kind: kind, rot: (Math.random() - 0.5) * 0.8
-                });
+                if (r < 0.1) {
+                    ceilingDecor.push({
+                        x: dx2, y: ceilingY * (0.3 + Math.random() * 0.5),
+                        kind: "chest", rot: (Math.random() - 0.5) * 0.8
+                    });
+                } else if (r < 0.4) {
+                    ceilingDecor.push({
+                        x: dx2, y: ceilingY * (0.3 + Math.random() * 0.5),
+                        kind: "bone", rot: (Math.random() - 0.5) * 0.8
+                    });
+                }
                 dx2 += 180 + Math.random() * 200;
             }
 
@@ -291,7 +353,7 @@
             const gap = Math.max(360 - level * 12, 230);
             while (ex < levelLength - 460) {
                 const t = types[Math.floor(Math.random() * types.length)];
-                enemies.push(makeEnemy(t, ex, groundY, ex - 80, ex + 80));
+                enemies.push(makeEnemy(t, ex, groundAt(ex), ex - 80, ex + 80));
                 ex += gap + Math.random() * 220;
             }
 
@@ -309,7 +371,48 @@
 
             // Treasure gems on the ground to reward exploring.
             for (let gx = 360; gx < levelLength - 460; gx += 300 + Math.random() * 260) {
-                gems.push(makeGem(gx, groundY - 30));
+                gems.push(makeGem(gx, groundAt(gx) - 30));
+            }
+
+            // Cosmetic, non-colliding cave clutter scattered on the floor: rocks,
+            // small glowing mushrooms and stalagmites. A dense, hazy "back" layer
+            // sits behind the floor mist for depth, while a sparse, dark "front"
+            // layer sweeps past ahead of the turtle so the player feels like they
+            // are moving through the cave. Anchored via groundAt() to ride plateaus.
+            const decorKinds = ["rock", "rock", "mushroom", "stalagmite"];
+            let dcx = 160;
+            while (dcx < levelLength - 100) {
+                const kind = decorKinds[Math.floor(Math.random() * decorKinds.length)];
+                const s = 0.55 + Math.random() * 0.6;
+                // Keep the prop's whole base on level floor so it never overhangs
+                // a plateau ramp; skip the spot if it can't be nudged onto flat ground.
+                const fx2 = fitDecorX(dcx, decorHalfWidth(kind, s));
+                if (fx2 !== null) {
+                    decor.push({
+                        x: fx2, layer: "back",
+                        kind: kind,
+                        s: s,
+                        seed: Math.random() * 1000,
+                        flip: Math.random() < 0.5 ? -1 : 1
+                    });
+                }
+                dcx += 90 + Math.random() * 150;
+            }
+            let fcx = 420 + Math.random() * 300;
+            while (fcx < levelLength - 200) {
+                const kind = Math.random() < 0.5 ? "rock" : "stalagmite";
+                const s = 1.3 + Math.random() * 0.8;
+                const ffx = fitDecorX(fcx, decorHalfWidth(kind, s));
+                if (ffx !== null) {
+                    decor.push({
+                        x: ffx, layer: "front",
+                        kind: kind,
+                        s: s,
+                        seed: Math.random() * 1000,
+                        flip: Math.random() < 0.5 ? -1 : 1
+                    });
+                }
+                fcx += 520 + Math.random() * 520;
             }
 
             hero = {
@@ -317,6 +420,7 @@
                 facing: 1, onGround: true, walk: 0,
                 dashTime: 0, dashCd: 0, dashIFrame: 0, dashUsed: false, dashHit: {},
                 shell: false, slamming: false, invuln: 0, shellHold: 0, fallThrough: 0, jumpsUsed: 0,
+                shellEnergy: 1, shellLocked: false,
                 attackTime: 0, attackDur: ATTACK_DUR, attackCd: 0, slashId: 0,
                 comboStep: 0, comboTimer: 0, attackSpin: false, attackRise: false, dashJumpTime: 0, py: groundY, lunge: 0
             };
@@ -398,7 +502,8 @@
 
         function spawnBoss() {
             bossSpawned = true;
-            const kind = BOSS_ORDER[(level - 1) % BOSS_ORDER.length];
+            if (!bossOrder) shuffleBossOrder();
+            const kind = bossOrder[(level - 1) % bossOrder.length];
             const cfg = BOSSES[kind];
             // Flyers hover above the ground; ground bosses stand on the floor.
             const hoverY = cfg.flying ? groundY - 150 : groundY;
@@ -426,7 +531,7 @@
 
         function banner(text, t) { bannerText = text; bannerTime = t; }
 
-        function jump(leanX) {
+        function jump(leanX, diagonal) {
             if (!alive || hero.shell) return;
             // Jumping during a dash, or just after it, launches a high dash-jump.
             const dashJumping = hero.dashTime > 0 || hero.dashJumpTime > 0;
@@ -460,8 +565,11 @@
             hero.vy = -(hero.jumpsUsed >= 2 ? DOUBLE_JUMP_V : JUMP_V);
             // Lean the jump along the swipe: leanX is the swipe's horizontal
             // component (-1..1), so a more sideways swipe carries further across.
+            // A clearly diagonal (rising-but-horizontal) swipe leans much harder,
+            // giving the long, low diagonal leap the player is reaching for.
             if (leanX) {
-                hero.vx = leanX * JUMP_V * JUMP_LEAN;
+                const lean = diagonal ? JUMP_LEAN_DIAG : JUMP_LEAN;
+                hero.vx = leanX * JUMP_V * lean;
                 hero.facing = leanX < 0 ? -1 : 1;
             }
             hero.onGround = false;
@@ -612,7 +720,7 @@
         function shellSlam() {
             SGSound.play("explode");
             host.vibrate([16, 24, 16]);
-            puff(hero.x, groundY, "#bdbad0", 16);
+            puff(hero.x, hero.y, "#bdbad0", 16);
             for (const e of enemies) {
                 if (Math.abs(e.x - hero.x) < SHELL_SLAM_RANGE && Math.abs(e.baseY - hero.y) < 90) {
                     const dir = e.x < hero.x ? -1 : 1;
@@ -705,7 +813,7 @@
             for (let i = 0; i < missing; i++) {
                 spawnDrop(boss.x + (Math.random() - 0.5) * 90, boss.baseY - boss.h / 2 - Math.random() * 50, "heart");
             }
-            chest = { x: boss.x, y: groundY - 4, open: 0 };
+            chest = { x: boss.x, y: groundAt(boss.x) - 4, open: 0 };
             enemies = [];
             orbs = [];
             bolts = [];
@@ -752,7 +860,10 @@
             const shellWanted = (touchShell || keyDown) && alive;
 
             if (alive) {
-                if (shellWanted && !hero.shell) {
+                // Adult mode meters the shell with a stamina bar that drains while
+                // tucked and slowly refills while out. Kids mode ignores it.
+                const shellAllowed = kids || (!hero.shellLocked && hero.shellEnergy > 0);
+                if (shellWanted && !hero.shell && shellAllowed) {
                     hero.shell = true;
                     // Tucking into the shell while airborne commits to a ground
                     // slam: once started it always drops to the floor, so the
@@ -769,6 +880,9 @@
                 // A committed slam stays tucked until it lands; otherwise the
                 // shell simply follows whether the player is holding the gesture.
                 if (!shellWanted && hero.shell && !hero.slamming) hero.shell = false;
+
+                if (!kids) updateShellEnergy(dt);
+
                 updateHero(dt, moveDir);
             }
 
@@ -803,6 +917,30 @@
             if (shakeT > 0) {
                 shakeT -= dt;
                 if (shakeT <= 0) { shakeT = 0; shakeMag = 0; }
+            }
+        }
+
+        // Adult-mode shell stamina. Drains while tucked; passively refills while
+        // out. Running dry forces the turtle out of the shell and locks it until
+        // the bar is full again, so the shell works on a recharge cooldown.
+        function updateShellEnergy(dt) {
+            if (hero.shell) {
+                hero.shellEnergy = Math.max(0, hero.shellEnergy - SHELL_DRAIN * dt);
+                // Out of stamina: pop out and start the cooldown lockout. A
+                // committed mid-air slam is allowed to finish first (it pops out
+                // the moment it lands), matching the always-complete slam design.
+                if (hero.shellEnergy <= 0 && !hero.slamming) {
+                    hero.shellEnergy = 0;
+                    hero.shell = false;
+                    hero.shellLocked = true;
+                    SGSound.play("bounce");
+                    puff(hero.x, hero.y - hero.h / 2, "#8fd6a0", 8);
+                }
+            } else {
+                hero.shellEnergy = Math.min(1, hero.shellEnergy + SHELL_RECHARGE * dt);
+                // Lift the lockout once the bar has partially recovered, so the
+                // player can dip back into the shell without a full recharge.
+                if (hero.shellLocked && hero.shellEnergy >= SHELL_REARM) hero.shellLocked = false;
             }
         }
 
@@ -855,7 +993,13 @@
             const fallVy = hero.vy;       // remember impact speed for the shell slam
             hero.onGround = false;
             let standingPlatform = null;
-            if (hero.y >= groundY) { hero.y = groundY; hero.vy = 0; hero.onGround = true; }
+            const surfaceY = groundAt(hero.x);
+            if (hero.y >= surfaceY) { hero.y = surfaceY; hero.vy = 0; hero.onGround = true; }
+            else if (wasOnGround && hero.vy >= 0 && surfaceY - hero.y < 40) {
+                // Descending a plateau ramp: keep the turtle glued to the slope
+                // instead of momentarily launching off the downhill edge.
+                hero.y = surfaceY; hero.vy = 0; hero.onGround = true;
+            }
             for (const p of platforms) {
                 if (hero.vy >= 0 && hero.py <= p.y + 2 && hero.y >= p.y && hero.y <= p.y + 26 &&
                     hero.x > p.x - 2 && hero.x < p.x + p.w + 2) {
@@ -1021,7 +1165,7 @@
                         }
                     }
                 }
-                if (s.life > 0 && s.y > groundY) { s.life = 0; puff(s.x, groundY, "#eaf2ff", 5); }
+                if (s.life > 0 && s.y > groundAt(s.x)) { s.life = 0; puff(s.x, groundAt(s.x), "#eaf2ff", 5); }
             }
             stars = stars.filter(s => s.life > 0 && s.x > camX - 40 && s.x < camX + W + 40);
         }
@@ -1037,10 +1181,72 @@
             });
         }
 
+        // Floor height of the solid cave terrain at world x. Plateaus raise the
+        // floor, with sloped ramps on each side so the surface is continuous and
+        // walkable. This is the single source of truth for the ground level.
+        function groundAt(x) {
+            let y = groundY;
+            if (plateaus) {
+                for (const pl of plateaus) {
+                    if (x <= pl.x || x >= pl.x + pl.w) continue;
+                    const rampEnd = pl.x + pl.ramp;
+                    const flatEnd = pl.x + pl.w - pl.ramp;
+                    let t;
+                    if (x < rampEnd) t = (x - pl.x) / pl.ramp;            // up-ramp
+                    else if (x > flatEnd) t = (pl.x + pl.w - x) / pl.ramp; // down-ramp
+                    else t = 1;                                            // flat top
+                    const surf = groundY + (pl.top - groundY) * Math.max(0, Math.min(1, t));
+                    if (surf < y) y = surf;
+                }
+            }
+            return y;
+        }
+
+        // True when a raised plateau covers world x (used to skip ground props).
+        function onPlateau(x) {
+            if (!plateaus) return false;
+            for (const pl of plateaus) {
+                if (x > pl.x && x < pl.x + pl.w) return true;
+            }
+            return false;
+        }
+
+        // Half-width (world units) of a flat-based ground prop's drawn footprint,
+        // including its scale, so we can keep it from overhanging a plateau slope.
+        function decorHalfWidth(kind, s) {
+            const base = kind === "rock" ? 21 : kind === "mushroom" ? 9 : 8;
+            return base * s;
+        }
+
+        // True when the whole span [x-half, x+half] rests on level floor — i.e. no
+        // plateau ramp crosses it — so a flat-based prop won't overhang a slope.
+        function flatFootprint(x, half) {
+            if (!plateaus) return true;
+            const a = x - half, b = x + half;
+            for (const pl of plateaus) {
+                const upS = pl.x, upE = pl.x + pl.ramp;             // up-ramp slope
+                const dnS = pl.x + pl.w - pl.ramp, dnE = pl.x + pl.w; // down-ramp slope
+                if (b > upS && a < upE) return false;
+                if (b > dnS && a < dnE) return false;
+            }
+            return true;
+        }
+
+        // Snap a prop's x so its footprint clears any plateau ramp. Returns the
+        // adjusted x, or null when no level spot is close enough (caller skips it).
+        function fitDecorX(x, half) {
+            if (flatFootprint(x, half)) return x;
+            for (let d = 8; d <= half + 28; d += 8) {
+                if (flatFootprint(x - d, half)) return x - d;
+                if (flatFootprint(x + d, half)) return x + d;
+            }
+            return null;
+        }
+
         function enemyFloorAt(x, feetY) {
             // The nearest surface at or below the enemy's feet — ground or a
             // platform it is standing on. Used so enemies fall when they walk off.
-            let floor = groundY;
+            let floor = groundAt(x);
             for (const p of platforms) {
                 if (x > p.x - 2 && x < p.x + p.w + 2 && p.y >= feetY - 2 && p.y < floor) {
                     floor = p.y;
@@ -1185,7 +1391,7 @@
                         e.x += e.diveVX * dt;
                         e.baseY += e.diveVY * dt;
                         e.x = Math.max(12, Math.min(e.x, levelLength - 12));
-                        e.baseY = Math.min(e.baseY, groundY - 6);
+                        e.baseY = Math.min(e.baseY, groundAt(e.x) - 6);
                         const eb = enemyBox(e); const hb = heroBox();
                         if (overlap(eb.x, eb.y, eb.w, eb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
                     } else {
@@ -1330,9 +1536,17 @@
                     SGSound.play("bossswoop");
                     break;
                 case "spit": {
-                    // Marsh king sprays a fan of poison globs.
-                    for (let a = -1; a <= 1; a++) {
-                        spawnProjectile(cx, cy, b.facing * 300, a * 150 - 60, "poison");
+                    // Marsh king sprays a fan of poison globs. The plague
+                    // broodmother spews a wider, denser venom spread.
+                    if (b.cfg.variant === "plague") {
+                        const arc = b.enraged ? [-2, -1, 0, 1, 2] : [-1.5, -0.5, 0.5, 1.5];
+                        for (const a of arc) {
+                            spawnProjectile(cx, cy, b.facing * 290, a * 110 - 70, "poison");
+                        }
+                    } else {
+                        for (let a = -1; a <= 1; a++) {
+                            spawnProjectile(cx, cy, b.facing * 300, a * 150 - 60, "poison");
+                        }
                     }
                     SGSound.play("shoot");
                     break;
@@ -1596,9 +1810,9 @@
                     puff(o.x, o.y, o.type === "poison" ? "#bdf08a" : "#ff9a5d", 8);
                 }
                 // Gravity-bound shots shatter on the cave floor.
-                if (o.grav && o.y > groundY) {
+                if (o.grav && o.y > groundAt(o.x)) {
                     o.life = 0;
-                    puff(o.x, groundY, o.type === "poison" ? "#bdf08a" : "#caa06a", 8);
+                    puff(o.x, groundAt(o.x), o.type === "poison" ? "#bdf08a" : "#caa06a", 8);
                 }
             }
             orbs = orbs.filter(o => o.life > 0 && o.x > camX - 80 && o.x < camX + W + 80);
@@ -1654,7 +1868,7 @@
                     // Otherwise fall under gravity and settle on the ground.
                     d.vy += 1400 * dt;
                     d.vx *= Math.pow(0.2, dt);
-                    let rest = groundY - 12;
+                    let rest = groundAt(d.x) - 12;
                     for (const p of platforms) {
                         if (d.x > p.x && d.x < p.x + p.w && d.y <= p.y) { rest = Math.min(rest, p.y - 12); }
                     }
@@ -1711,9 +1925,9 @@
                         continue;
                     }
                     // Lands and shatters on the floor.
-                    if (tipY >= groundY) {
+                    if (tipY >= groundAt(s.x)) {
                         s.state = "broken"; s.life = 0.3;
-                        puff(s.x, groundY, "#9a8fb0", 12);
+                        puff(s.x, groundAt(s.x), "#9a8fb0", 12);
                         SGSound.play("drop");
                     }
                 } else if (s.state === "broken") {
@@ -1774,6 +1988,7 @@
 
             drawGround();
             drawCeiling();
+            drawDecor("back");
             drawMist();
             for (const p of platforms) {
                 if (p.x + p.w < camX - 20 || p.x > camX + W + 20) continue;
@@ -1816,6 +2031,9 @@
                 ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
             }
             ctx.globalAlpha = 1;
+
+            // Foreground clutter passes in front of the action for a parallax sweep.
+            drawDecor("front");
 
             ctx.restore();
 
@@ -1923,14 +2141,120 @@
         }
 
         function drawGround() {
+            // Trace the solid terrain top, following any raised plateaus, then
+            // fill the rock body and a coloured rim along the surface.
+            const x0 = camX, x1 = camX + W;
+            const step = 6;
+            const pts = [];
+            for (let x = x0; x <= x1; x += step) pts.push([x, groundAt(x)]);
+            pts.push([x1, groundAt(x1)]);
+
             ctx.fillStyle = pal.rock;
-            ctx.fillRect(camX, groundY, W, H - groundY);
-            ctx.fillStyle = pal.spike;
-            ctx.fillRect(camX, groundY, W, 6);
+            ctx.beginPath();
+            ctx.moveTo(x0, H);
+            for (const pt of pts) ctx.lineTo(pt[0], pt[1]);
+            ctx.lineTo(x1, H);
+            ctx.closePath();
+            ctx.fill();
+
+            // Coloured rim hugging the surface profile.
+            ctx.strokeStyle = pal.spike;
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0], pts[0][1] + 3);
+            for (const pt of pts) ctx.lineTo(pt[0], pt[1] + 3);
+            ctx.stroke();
+
+            // Vertical crack detail dropping from the surface into the dark rock.
             ctx.fillStyle = "#1c1530";
             for (let x = Math.floor(camX / 48) * 48; x < camX + W; x += 48) {
-                ctx.fillRect(x, groundY + 16, 2, H - groundY);
+                const gy = groundAt(x);
+                ctx.fillRect(x, gy + 16, 2, H - gy);
             }
+        }
+
+        // Non-colliding cosmetic clutter on the cave floor — rocks, little
+        // glowing mushrooms and stalagmites. The "back" layer is hazy and sits
+        // behind the floor mist for depth; the "front" layer is a darker, larger
+        // silhouette drawn after the hero so it sweeps past in front of the
+        // turtle, selling the sense of travelling through the cave.
+        function drawDecor(layer) {
+            if (!decor) return;
+            const front = layer === "front";
+            for (const d of decor) {
+                if (d.layer !== layer) continue;
+                if (d.x < camX - 100 || d.x > camX + W + 100) continue;
+                ctx.save();
+                ctx.translate(d.x, groundAt(d.x) + 2);
+                ctx.scale(d.flip * d.s, d.s);
+                if (d.kind === "mushroom") {
+                    // Slim stalk with a softly glowing dome cap.
+                    const stalkH = 9, capW = 8;
+                    const glow = amb ? amb.mote : "235,175,220";
+                    ctx.globalAlpha = front ? 0.55 : 0.80;
+                    ctx.fillStyle = "rgba(228,224,236,1)";
+                    ctx.fillRect(-1.6, -stalkH, 3.2, stalkH);
+                    ctx.fillStyle = "rgba(" + glow + ",1)";
+                    ctx.beginPath();
+                    ctx.moveTo(-capW, -stalkH);
+                    ctx.quadraticCurveTo(0, -stalkH - capW * 1.1, capW, -stalkH);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.globalAlpha = front ? 0.7 : 1;
+                    ctx.fillStyle = "rgba(255,255,255,0.7)";
+                    ctx.beginPath();
+                    ctx.arc(-capW * 0.35, -stalkH - capW * 0.35, 1.1, 0, Math.PI * 2);
+                    ctx.arc(capW * 0.3, -stalkH - capW * 0.2, 0.9, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (d.kind === "stalagmite") {
+                    // Tapered spire rising from the floor (a ground-up stalactite).
+                    const w = 7, h = 24 + Math.sin(d.seed) * 5;
+                    ctx.globalAlpha = front ? 0.92 : 0.50;
+                    ctx.fillStyle = front ? pal.bot : pal.spike;
+                    ctx.beginPath();
+                    ctx.moveTo(-w, 0);
+                    ctx.quadraticCurveTo(-w * 0.35, -h * 0.55, 0, -h);
+                    ctx.quadraticCurveTo(w * 0.35, -h * 0.55, w, 0);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.globalAlpha = front ? 0.50 : 0.35;
+                    ctx.strokeStyle = front ? pal.rock : pal.spikeCrack;
+                    ctx.lineWidth = 1.2;
+                    ctx.beginPath();
+                    ctx.moveTo(-w * 0.55, -h * 0.2);
+                    ctx.quadraticCurveTo(-w * 0.15, -h * 0.6, 0, -h);
+                    ctx.stroke();
+                } else {
+                    // Lumpy rock mound, sometimes with a small companion pebble.
+                    const w = 16, h = 10 + Math.sin(d.seed) * 2;
+                    ctx.globalAlpha = front ? 0.92 : 0.50;
+                    ctx.fillStyle = front ? pal.bot : pal.spike;
+                    ctx.beginPath();
+                    ctx.moveTo(-w, 0);
+                    ctx.quadraticCurveTo(-w * 0.85, -h * 0.95, -w * 0.35, -h * 0.8);
+                    ctx.quadraticCurveTo(-w * 0.05, -h * 1.25, w * 0.32, -h * 0.85);
+                    ctx.quadraticCurveTo(w * 0.82, -h, w, 0);
+                    ctx.closePath();
+                    ctx.fill();
+                    if (Math.sin(d.seed * 1.7) > 0.1) {
+                        const px = w * 0.95, pw = 5;
+                        ctx.beginPath();
+                        ctx.moveTo(px - pw, 0);
+                        ctx.quadraticCurveTo(px, -pw * 1.3, px + pw, 0);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                    ctx.globalAlpha = front ? 0.50 : 0.32;
+                    ctx.strokeStyle = front ? pal.rock : pal.spikeCrack;
+                    ctx.lineWidth = 1.2;
+                    ctx.beginPath();
+                    ctx.moveTo(-w * 0.5, -h * 0.7);
+                    ctx.quadraticCurveTo(-w * 0.05, -h * 1.15, w * 0.32, -h * 0.78);
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+            ctx.globalAlpha = 1;
         }
 
         function drawCeiling() {
@@ -1947,28 +2271,36 @@
                 const h = 4 + ((x * 7) % 9);
                 ctx.fillRect(x + ((x * 3) % 18), 6 + ((x * 5) % (ceilingY - 14)), 3, h);
             }
-            // Buried decorations: bones and half-sunk chests.
+            // Buried decorations: bones and half-sunk chests, kept dull and
+            // low-opacity so they read as relics settled into the dark soil.
             for (const d of ceilingDecor) {
                 if (d.x < camX - 40 || d.x > camX + W + 40) continue;
                 ctx.save();
                 ctx.translate(d.x, d.y);
                 ctx.rotate(d.rot);
                 if (d.kind === "chest") {
-                    ctx.fillStyle = "#6b4423";
+                    // Dull, half-sunk chest with tarnished fittings.
+                    ctx.globalAlpha = 0.38;
+                    ctx.fillStyle = "#4a3622";
                     roundRect(-13, -9, 26, 16, 3);
-                    ctx.fillStyle = "#8a5a2b";
+                    ctx.fillStyle = "#574027";
                     roundRect(-13, -9, 26, 6, 3);
-                    ctx.fillStyle = "#caa64a";
+                    ctx.fillStyle = "#6b5a38";
                     ctx.fillRect(-2, -7, 4, 12);
                 } else {
-                    // A crossed pair of bones.
-                    ctx.strokeStyle = "rgba(220,222,235,0.55)";
-                    ctx.lineWidth = 4; ctx.lineCap = "round";
-                    ctx.beginPath(); ctx.moveTo(-10, -6); ctx.lineTo(10, 6); ctx.stroke();
-                    ctx.beginPath(); ctx.moveTo(-10, 6); ctx.lineTo(10, -6); ctx.stroke();
-                    ctx.fillStyle = "rgba(220,222,235,0.55)";
-                    ctx.beginPath(); ctx.arc(-10, -6, 2.6, 0, Math.PI * 2); ctx.arc(-10, 6, 2.6, 0, Math.PI * 2);
-                    ctx.arc(10, -6, 2.6, 0, Math.PI * 2); ctx.arc(10, 6, 2.6, 0, Math.PI * 2); ctx.fill();
+                    // A single long bone — a shaft with two-lobed knobbed ends —
+                    // dull and faint so it barely surfaces from the ceiling soil.
+                    // Drawn as one path so the low opacity stays even across overlaps.
+                    ctx.globalAlpha = 0.26;
+                    ctx.fillStyle = "#9c9384";
+                    const half = 9, sh = 2.2, kr = 3.2, ko = 3;
+                    ctx.beginPath();
+                    ctx.rect(-half, -sh, half * 2, sh * 2);
+                    ctx.moveTo(-half + kr, -ko); ctx.arc(-half, -ko, kr, 0, Math.PI * 2);
+                    ctx.moveTo(-half + kr, ko); ctx.arc(-half, ko, kr, 0, Math.PI * 2);
+                    ctx.moveTo(half + kr, -ko); ctx.arc(half, -ko, kr, 0, Math.PI * 2);
+                    ctx.moveTo(half + kr, ko); ctx.arc(half, ko, kr, 0, Math.PI * 2);
+                    ctx.fill();
                 }
                 ctx.restore();
             }
@@ -1983,16 +2315,23 @@
                 // Springy mushroom growing from the ground.
                 ctx.fillStyle = "#caa64a";
                 ctx.fillRect(p.x + p.w / 2 - 8, yb + p.h, 16, Math.max(0, groundY - (yb + p.h)));
+                const capBottom = yb + p.h;
+                const capCtrlY = yb - 18 - p.bounce;
                 ctx.fillStyle = "#e2557a";
                 ctx.beginPath();
-                ctx.moveTo(p.x, yb + p.h);
-                ctx.quadraticCurveTo(p.x + p.w / 2, yb - 18 - p.bounce, p.x + p.w, yb + p.h);
+                ctx.moveTo(p.x, capBottom);
+                ctx.quadraticCurveTo(p.x + p.w / 2, capCtrlY, p.x + p.w, capBottom);
                 ctx.closePath();
                 ctx.fill();
+                // Spots ride the curved cap surface so they never poke above it.
                 ctx.fillStyle = "#ffd1de";
+                const spotR = 3.4;
                 for (let i = 0; i < 3; i++) {
+                    const t = 0.28 + i * 0.22;
+                    const mt = 1 - t;
+                    const surfY = mt * mt * capBottom + 2 * mt * t * capCtrlY + t * t * capBottom;
                     ctx.beginPath();
-                    ctx.arc(p.x + p.w * (0.28 + i * 0.22), yb - 1 - p.bounce * 0.5, 4, 0, Math.PI * 2);
+                    ctx.arc(p.x + p.w * t, surfY + spotR + 2, spotR, 0, Math.PI * 2);
                     ctx.fill();
                 }
             } else {
@@ -2268,7 +2607,7 @@
                 ctx.save();
                 ctx.fillStyle = "rgba(0,0,0,0.18)";
                 ctx.beginPath();
-                ctx.ellipse(0, groundY - bottom, w2 * 0.5, 5, 0, 0, Math.PI * 2);
+                ctx.ellipse(0, groundAt(e.x) - bottom, w2 * 0.5, 5, 0, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.restore();
 
@@ -2348,7 +2687,7 @@
                 ctx.translate(b.x, b.baseY);
                 ctx.fillStyle = "rgba(0,0,0,0.22)";
                 ctx.beginPath();
-                ctx.ellipse(0, groundY - b.baseY, b.w * 0.42, 10, 0, 0, Math.PI * 2);
+                ctx.ellipse(0, groundAt(b.x) - b.baseY, b.w * 0.42, 10, 0, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.restore();
             }
@@ -2391,47 +2730,126 @@
                 if (winding || b.enraged) { ctx.shadowColor = "#ff3b3b"; ctx.shadowBlur = 14; }
                 ctx.fillRect(-14, -H2 * 0.9, 11, 7);
                 ctx.fillRect(5, -H2 * 0.9, 11, 7);
-            } else if (b.kind === "marshking") {
-                // ----- Bloated marsh toad-king -----
+            } else if (cfg.shape === "toadking") {
+                // ----- Swollen toad sovereign (marsh king / mire broodmother) -----
+                const plague = cfg.variant === "plague";
                 const breathe = Math.sin(b.anim * 4) * 2;
+                // Crouch low while winding up a hop, stretch tall at the leap's apex.
+                const hopping = b.move === "hop" && (b.state === "windup" || b.state === "attack");
+                const crouch = (b.state === "windup" && b.move === "hop") ? 6 : 0;
+                const squash = crouch * 0.5;
+                const puffed = b.state === "attack" && b.move === "spit";
+                const sac = (puffed ? 12 : 0) + Math.abs(Math.sin(b.anim * 3)) * 3 + breathe;
+                const sacCol = plague ? "#8d63b4" : "#7fce86";
+                const bellyCol = plague ? "#caa6e6" : "#d8f4c0";
+                const spotCol = plague ? "#3c2c50" : "#2f5a39";
+
+                // Splayed webbed feet anchoring the squat body.
                 ctx.fillStyle = cfg.trim;
-                roundRect(-W2 / 2 + 4, -20, 22, 20, 8);                      // squat legs
-                roundRect(W2 / 2 - 26, -20, 22, 20, 8);
+                for (const fx of [-W2 * 0.4, W2 * 0.4 - 26]) {
+                    ctx.beginPath();
+                    ctx.moveTo(fx, 0);
+                    ctx.lineTo(fx - 6, -16 + crouch);
+                    ctx.lineTo(fx + 30, -16 + crouch);
+                    ctx.lineTo(fx + 24, 0);
+                    ctx.closePath();
+                    ctx.fill();
+                    // webbed toes
+                    ctx.beginPath();
+                    ctx.moveTo(fx - 6, 0); ctx.lineTo(fx + 2, -7); ctx.lineTo(fx + 9, 0);
+                    ctx.lineTo(fx + 16, -7); ctx.lineTo(fx + 24, 0); ctx.closePath();
+                    ctx.fill();
+                }
+
+                // Bulbous body dome (squashes a touch when crouched).
                 ctx.fillStyle = cfg.body;
                 ctx.beginPath();
-                ctx.ellipse(0, -H2 * 0.42, W2 * 0.52, H2 * 0.46 + breathe, 0, 0, Math.PI * 2); // body dome
+                ctx.ellipse(0, -H2 * 0.4 + squash, W2 * 0.54, H2 * 0.46 + breathe - squash, 0, 0, Math.PI * 2);
                 ctx.fill();
-                ctx.fillStyle = cfg.bodyLit;
-                ctx.beginPath();
-                ctx.ellipse(-6, -H2 * 0.52, W2 * 0.3, H2 * 0.22, 0, 0, Math.PI * 2);           // belly sheen
-                ctx.fill();
-                // wide mouth
-                ctx.fillStyle = "#2c3d2c";
-                roundRect(-W2 * 0.34, -H2 * 0.34, W2 * 0.68, 10, 5);
-                if (b.state === "attack" && b.move === "spit") {
-                    ctx.fillStyle = "#9fe04f";
-                    roundRect(W2 * 0.2, -H2 * 0.38, 16, 14, 6);             // puffed cheek
+
+                if (plague) {
+                    // Glowing spore-egg cluster riding on the broodmother's back.
+                    for (const eg of [[-W2 * 0.34, -H2 * 0.7, 8], [-W2 * 0.16, -H2 * 0.82, 9], [W2 * 0.04, -H2 * 0.74, 7]]) {
+                        ctx.fillStyle = "#3c2c50";
+                        ctx.beginPath(); ctx.arc(eg[0], eg[1] + squash, eg[2] + 1.5, 0, Math.PI * 2); ctx.fill();
+                        ctx.fillStyle = b.enraged ? "#e6ff8a" : "#aef06a";
+                        ctx.globalAlpha = 0.5 + Math.sin(b.anim * 5 + eg[0]) * 0.25;
+                        ctx.beginPath(); ctx.arc(eg[0], eg[1] + squash, eg[2], 0, Math.PI * 2); ctx.fill();
+                        ctx.globalAlpha = 1;
+                    }
                 }
-                // bulging eyes
-                ctx.fillStyle = "#f6fff0";
+
+                // Warty back speckle.
+                ctx.fillStyle = spotCol;
+                for (const wt of [[W2 * 0.22, -H2 * 0.62, 4], [W2 * 0.34, -H2 * 0.46, 3.4], [W2 * 0.12, -H2 * 0.72, 3]]) {
+                    ctx.beginPath(); ctx.arc(wt[0], wt[1] + squash, wt[2], 0, Math.PI * 2); ctx.fill();
+                }
+
+                // Pale belly sheen.
+                ctx.fillStyle = bellyCol;
                 ctx.beginPath();
-                ctx.arc(-13, -H2 * 0.66, 11, 0, Math.PI * 2);
-                ctx.arc(15, -H2 * 0.66, 11, 0, Math.PI * 2);
+                ctx.ellipse(0, -H2 * 0.26 + squash, W2 * 0.36, H2 * 0.24, 0, 0, Math.PI * 2);
                 ctx.fill();
-                ctx.fillStyle = eye;
+
+                // Throat sac swelling beneath the chin (puffs out before a spit).
+                ctx.fillStyle = sacCol;
                 ctx.beginPath();
-                ctx.arc(-13, -H2 * 0.66, 5, 0, Math.PI * 2);
-                ctx.arc(15, -H2 * 0.66, 5, 0, Math.PI * 2);
+                ctx.ellipse(W2 * 0.04, -H2 * 0.18 + squash, W2 * 0.2 + sac * 0.4, H2 * 0.14 + sac * 0.5, 0, 0, Math.PI * 2);
                 ctx.fill();
-                // little crown
-                ctx.fillStyle = "#ffd54a";
+
+                // Wide grin (slightly agape when spitting).
+                ctx.strokeStyle = "#241c2a";
+                ctx.lineWidth = 4; ctx.lineCap = "round";
                 ctx.beginPath();
-                ctx.moveTo(-20, -H2 * 0.82);
-                ctx.lineTo(-12, -H2 * 0.98); ctx.lineTo(-4, -H2 * 0.84);
-                ctx.lineTo(4, -H2 * 0.98); ctx.lineTo(12, -H2 * 0.84);
-                ctx.lineTo(20, -H2 * 0.98); ctx.lineTo(22, -H2 * 0.8);
-                ctx.lineTo(-22, -H2 * 0.8); ctx.closePath();
-                ctx.fill();
+                ctx.moveTo(-W2 * 0.34, -H2 * 0.4 + squash);
+                ctx.quadraticCurveTo(0, -H2 * 0.28 + squash + (puffed ? 8 : 2), W2 * 0.34, -H2 * 0.4 + squash);
+                ctx.stroke();
+
+                // Heavy-lidded bulging eyes set high on the head.
+                for (const ex of [-15, 17]) {
+                    ctx.fillStyle = cfg.body;
+                    ctx.beginPath(); ctx.arc(ex, -H2 * 0.66 + squash, 13, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = plague ? "#efe2ff" : "#f6fff0";
+                    ctx.beginPath(); ctx.arc(ex, -H2 * 0.64 + squash, 9, 0, Math.PI * 2); ctx.fill();
+                    // vertical slit pupil
+                    ctx.fillStyle = eye;
+                    ctx.beginPath(); ctx.ellipse(ex, -H2 * 0.64 + squash, 3, 7, 0, 0, Math.PI * 2); ctx.fill();
+                    // heavy upper lid
+                    ctx.fillStyle = cfg.trim;
+                    ctx.beginPath();
+                    ctx.moveTo(ex - 13, -H2 * 0.72 + squash);
+                    ctx.quadraticCurveTo(ex, -H2 * 0.7 + squash - (hopping ? 3 : 0), ex + 13, -H2 * 0.72 + squash);
+                    ctx.lineTo(ex + 13, -H2 * 0.78 + squash); ctx.lineTo(ex - 13, -H2 * 0.78 + squash);
+                    ctx.closePath(); ctx.fill();
+                }
+
+                // Headpiece: a jeweled marsh-gold crown, or a chitin spine-crown.
+                if (plague) {
+                    ctx.fillStyle = cfg.trim;
+                    for (let sx = -18; sx <= 18; sx += 9) {
+                        ctx.beginPath();
+                        ctx.moveTo(sx - 4, -H2 * 0.84 + squash);
+                        ctx.lineTo(sx, -H2 * 1.0 + squash);
+                        ctx.lineTo(sx + 4, -H2 * 0.84 + squash);
+                        ctx.closePath(); ctx.fill();
+                    }
+                    ctx.fillStyle = b.enraged ? "#e6ff8a" : "#aef06a";
+                    ctx.beginPath(); ctx.arc(0, -H2 * 0.92 + squash, 3.4, 0, Math.PI * 2); ctx.fill();
+                } else {
+                    ctx.fillStyle = "#ffd54a";
+                    ctx.beginPath();
+                    ctx.moveTo(-20, -H2 * 0.82 + squash);
+                    ctx.lineTo(-12, -H2 * 0.98 + squash); ctx.lineTo(-4, -H2 * 0.84 + squash);
+                    ctx.lineTo(4, -H2 * 0.98 + squash); ctx.lineTo(12, -H2 * 0.84 + squash);
+                    ctx.lineTo(20, -H2 * 0.98 + squash); ctx.lineTo(22, -H2 * 0.8 + squash);
+                    ctx.lineTo(-22, -H2 * 0.8 + squash); ctx.closePath();
+                    ctx.fill();
+                    // crown jewels
+                    ctx.fillStyle = "#e8556a";
+                    ctx.beginPath(); ctx.arc(-12, -H2 * 0.9 + squash, 2.4, 0, Math.PI * 2);
+                    ctx.arc(4, -H2 * 0.9 + squash, 2.4, 0, Math.PI * 2);
+                    ctx.arc(20, -H2 * 0.9 + squash, 2.4, 0, Math.PI * 2); ctx.fill();
+                }
             } else if (cfg.shape === "warbot") {
                 // ----- Armoured robot chassis (war titan / siege / assault) -----
                 const variant = cfg.variant || "titan";
@@ -2977,6 +3395,25 @@
                 roundRect(W - 94, H - 24, 68 * (1 - hero.dashCd / DASH_CD), 6, 3);
             }
 
+            // Adult-mode shell stamina bar (sits above the dash pip). Dims while
+            // locked out, and pulses as it drains so the cooldown reads clearly.
+            if (!kids) {
+                const sw = 72, sx = W - 96, sy = H - 42;
+                ctx.fillStyle = "rgba(0,0,0,0.35)";
+                roundRect(sx, sy, sw, 10, 5);
+                const e = hero.shellEnergy;
+                let barCol;
+                if (hero.shellLocked) barCol = "#e06464";
+                else if (e < 0.3) barCol = "#ffb14d";
+                else barCol = "#7be6a0";
+                ctx.fillStyle = barCol;
+                roundRect(sx + 2, sy + 2, (sw - 4) * e, 6, 3);
+                ctx.fillStyle = "rgba(242,243,255,0.8)";
+                ctx.font = "800 8px system-ui, sans-serif";
+                ctx.textAlign = "right";
+                ctx.fillText("SHELL", sx + sw, sy - 3);
+            }
+
             // Center banner
             if (bannerTime > 0) {
                 ctx.globalAlpha = Math.min(1, bannerTime * 1.6);
@@ -3042,23 +3479,39 @@
 
             if (p.mode === "") {
                 if (Math.max(adx, ady) < MOVE_THRESH) return;
-                // Only a narrowly-horizontal swipe dashes/moves; anything steeper
-                // is treated as a vertical intent (jump up / shell down) so a
-                // diagonal flick meant as a jump doesn't dash by mistake.
-                if (adx > ady * DASH_X_DOMINANCE) {
-                    const dir = dx < 0 ? -1 : 1;
-                    // A fast horizontal flick dashes; a gentler swipe just moves
-                    // (and steers left/right, including while airborne).
-                    if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(dir, 0);
-                    touchMoveDir = dir; moveId = id; p.mode = "move";
-                    p.anchorY = y;       // baseline for vertical swipes while moving
-                } else {
-                    if (dy < -SWIPE_THRESH) {
-                        // Swipe up to jump; in the air this double-jumps. jump()
-                        // guards the jump count and leans by the swipe's slant.
+                const rising = dy < 0;
+                if (rising) {
+                    // A rising swipe falls into one of three angular zones:
+                    //   • within ~15° of horizontal  -> dash / move
+                    //   • ~15°..65° (angled)          -> angled jump, strong x-lean
+                    //   • steeper than ~65°           -> straight jump, light lean
+                    const inDashCone = adx > ady * DASH_X_DOMINANCE_UP;
+                    if (inDashCone) {
+                        // Near-flat: dash/move, but only once the swipe has run far
+                        // enough to be sure of its angle (a fast diagonal flick often
+                        // starts flat and would otherwise dash before the lift shows).
+                        if (adx < DASH_COMMIT_DIST) return;
+                        const dir = dx < 0 ? -1 : 1;
+                        if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(dir, 0);
+                        touchMoveDir = dir; moveId = id; p.mode = "move";
+                        p.anchorY = y;
+                    } else {
+                        // Above the dash cone => a jump. Wait for a deliberate flick
+                        // (overall travel), then lean hard unless it's near-vertical.
+                        if (Math.hypot(dx, dy) < SWIPE_THRESH) return;
+                        const steep = ady > adx * JUMP_STEEP_DOMINANCE;
                         const len = Math.hypot(dx, dy) || 1;
-                        jump(dx / len);
+                        jump(dx / len, !steep);     // angled jump unless steep
                         p.mode = "swiped"; p.anchorY = y;
+                    }
+                } else {
+                    // Flat or downward swipe keeps the original cone: near-flat dashes,
+                    // anything steeper is a shell tuck.
+                    if (adx > ady * DASH_X_DOMINANCE) {
+                        const dir = dx < 0 ? -1 : 1;
+                        if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(dir, 0);
+                        touchMoveDir = dir; moveId = id; p.mode = "move";
+                        p.anchorY = y;
                     } else if (dy > SWIPE_THRESH) {
                         touchShell = true; shellId = id; p.mode = "shell"; p.anchorY = y;
                     }
@@ -3194,6 +3647,7 @@
             time = 0;
             lastTs = 0;
             bannerTime = 0;
+            shuffleBossOrder();
             pointers.clear();
             moveId = null; shellId = null;
             touchMoveDir = 0; touchShell = false;
