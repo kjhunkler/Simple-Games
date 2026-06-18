@@ -13,7 +13,7 @@
         const HIT_INVULN = 5;                       // seconds of mercy after a hit
         const GRAVITY = 2100;
         const MOVE_SPEED = 220;
-        const AIR_MOVE = 195;
+        const AIR_MOVE = 140;                        // partial air steering: slower than ground walking
         const JUMP_V = 770;
         const DASH_SPEED = 660;
         const DASH_TIME = 0.18;
@@ -23,6 +23,7 @@
         const SLASH_RANGE = 66;                     // big sword reach
         const SLASH_HEIGHT = 54;
         const SWORD_LUNGE_V = 300;                  // slight hop toward an out-of-reach foe
+        const TARGET_RANGE = 520;                   // ignore auto-target foes farther than this
         const SPIN_DUR = 0.42;                       // 3rd combo hit: spin attack
         const SPIN_ACTIVE = 0.32;
         const SPIN_RANGE = 82;                       // spin reaches both sides
@@ -40,7 +41,7 @@
         const STAL_APPROACH = 80;                   // cracked stalactite drops within this X gap
         const SHELL_DROP_TIME = 1.0;                // hold shell on a ledge this long to fall through
         const BOUNCE_V = JUMP_V * 1.35;             // mushroom platform launch speed
-        const DOUBLE_JUMP_V = JUMP_V * 0.9;         // second, mid-air jump
+        const DOUBLE_JUMP_V = JUMP_V * 1.05;        // second, mid-air jump — a touch higher than the first
         const SHELL_FALL_MIN = 1150;                // shell plummets at least this fast
         const SHELL_GRAVITY_MULT = 1.7;             // extra gravity while shelled mid-air
         const SHELL_SLAM_MINVY = 680;               // fall speed needed to trigger a slam
@@ -53,6 +54,7 @@
         const SWIPE_THRESH = 38;
         const TAP_MAX_MOVE = 16;
         const TAP_MAX_TIME = 260;
+        const DASH_X_DOMINANCE = 1.7;                // a dash/move swipe must be this much more horizontal than vertical (~30°); steeper swipes jump/shell
         const JUMP_LEAN = 0.55;                      // how much sideways speed a leaning jump gets
 
         // Each cave level recolours the cave a little.
@@ -396,8 +398,10 @@
         }
 
         // Closest living enemy/boss to the turtle, used for sword auto-facing.
+        // Foes beyond TARGET_RANGE are ignored so attacks don't lock onto
+        // something off-screen or across the cave.
         function nearestEnemy() {
-            let best = null, bestD = Infinity;
+            let best = null, bestD = TARGET_RANGE;
             for (const e of enemies) {
                 const d = Math.hypot(e.x - hero.x, e.baseY - hero.y);
                 if (d < bestD) { bestD = d; best = e; }
@@ -1722,29 +1726,26 @@
 
             if (p.mode === "") {
                 if (Math.max(adx, ady) < MOVE_THRESH) return;
-                if (ady > adx) {
+                // Only a narrowly-horizontal swipe dashes/moves; anything steeper
+                // is treated as a vertical intent (jump up / shell down) so a
+                // diagonal flick meant as a jump doesn't dash by mistake.
+                if (adx > ady * DASH_X_DOMINANCE) {
+                    const dir = dx < 0 ? -1 : 1;
+                    // A fast horizontal flick dashes; a gentler swipe just moves
+                    // (and steers left/right, including while airborne).
+                    if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(dir, 0);
+                    touchMoveDir = dir; moveId = id; p.mode = "move";
+                    p.anchorY = y;       // baseline for vertical swipes while moving
+                } else {
                     if (dy < -SWIPE_THRESH) {
-                        if (hero.onGround) {
-                            // Lean the jump by the swipe's horizontal share, so it
-                            // travels in whatever direction the swipe points.
-                            const len = Math.hypot(dx, dy) || 1;
-                            jump(dx / len);
-                        } else if (hero.jumpsUsed < 2 && ady > adx * 2) {
-                            // A clean upward swipe in the air is a double jump.
-                            jump(0);
-                        } else {
-                            startDash(hero.facing * 0.4, -1);
-                        }
-                        p.mode = "swiped";
+                        // Swipe up to jump; in the air this double-jumps. jump()
+                        // guards the jump count and leans by the swipe's slant.
+                        const len = Math.hypot(dx, dy) || 1;
+                        jump(dx / len);
+                        p.mode = "swiped"; p.anchorY = y;
                     } else if (dy > SWIPE_THRESH) {
                         touchShell = true; shellId = id; p.mode = "shell"; p.anchorY = y;
                     }
-                } else {
-                    const dir = dx < 0 ? -1 : 1;
-                    // A fast horizontal flick dashes (on the ground or in the air).
-                    if (!hero.shell && (flickSpeed > GROUND_DASH_SPEED || !hero.onGround)) startDash(dir, 0);
-                    touchMoveDir = dir; moveId = id; p.mode = "move";
-                    p.anchorY = y;       // baseline for vertical swipes while moving
                 }
             } else if (p.mode === "move") {
                 if (adx > 8) { touchMoveDir = dx < 0 ? -1 : 1; }
@@ -1754,7 +1755,9 @@
                 // deliberate vertical flick builds enough offset to trigger.
                 const vUp = p.anchorY - y, vDown = y - p.anchorY;
                 if (vUp > SWIPE_THRESH) {
-                    jump(touchMoveDir);          // a running jump leans the way you move
+                    // A running jump (ground only). The double jump deliberately
+                    // requires lifting and swiping up again, so don't jump in mid-air here.
+                    if (hero.onGround) jump(touchMoveDir);
                     p.anchorY = y;
                 } else if (vDown > SWIPE_THRESH * 1.4) {
                     touchShell = true; shellId = id;
@@ -1765,6 +1768,26 @@
                     // startDash is cooldown-gated so this can't spam.
                     if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(sdx < 0 ? -1 : 1, 0);
                     p.anchorY = y;       // mostly-horizontal motion keeps the baseline current
+                }
+            } else if (p.mode === "swiped") {
+                // Airborne after the launch swipe: keep reacting so an air dash or
+                // air shell slam can follow without lifting the finger. The anchor
+                // trails the finger up to its peak so only a deliberate dive down
+                // (or sideways flick) triggers the next action.
+                const vDown = y - p.anchorY;
+                if (vDown > SWIPE_THRESH * 1.4) {
+                    // Tuck into the shell mid-air; the hard landing slams.
+                    touchShell = true; shellId = id;
+                    if (moveId === id) { moveId = null; touchMoveDir = 0; }
+                    p.mode = "shell"; p.anchorY = y;
+                } else if (Math.abs(sdx) > 8 && Math.abs(sdy) <= Math.abs(sdx)) {
+                    // Sideways motion steers in the air; a fast flick air-dashes.
+                    // Hand off to move mode so steering and chaining keep working.
+                    const dir = sdx < 0 ? -1 : 1;
+                    if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(dir, 0);
+                    touchMoveDir = dir; moveId = id; p.mode = "move"; p.anchorY = y;
+                } else if (sdy <= 0) {
+                    p.anchorY = y;       // follow the finger up so a later dive reads true
                 }
             } else if (p.mode === "shell") {
                 // An upward swipe pops back out of the shell without lifting off,
