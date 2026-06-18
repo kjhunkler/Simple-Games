@@ -127,6 +127,39 @@
             tone(784, 0.1, { type: "triangle", vol: 0.18, delay: 0.18 });
             tone(1047, 0.14, { type: "triangle", vol: 0.2, delay: 0.27 });
             tone(1319, 0.3, { type: "triangle", vol: 0.2, delay: 0.4 });
+        },
+        bossroar() {
+            // Low, snarling rumble that pitches down — a beast's bellow.
+            tone(150, 0.5, { type: "sawtooth", slide: 60, vol: 0.26 });
+            tone(90, 0.55, { type: "square", slide: 42, vol: 0.2, delay: 0.04 });
+            noise(0.5, { filter: 700, filterSlide: 160, vol: 0.18 });
+        },
+        bosscharge() {
+            // Rising whine that warns of an incoming heavy attack.
+            tone(180, 0.45, { type: "sawtooth", slide: 720, vol: 0.12 });
+            tone(240, 0.45, { type: "square", slide: 960, vol: 0.06, delay: 0.02 });
+        },
+        bossslam() {
+            // Heavy ground impact: deep boom plus a gritty crunch.
+            tone(110, 0.4, { type: "sine", slide: 36, vol: 0.34 });
+            noise(0.4, { filter: 1400, filterSlide: 90, vol: 0.32 });
+            tone(70, 0.34, { type: "square", slide: 30, vol: 0.18, delay: 0.02 });
+        },
+        bosslaser() {
+            // Sustained energy beam: bright buzzing tone with a noisy edge.
+            tone(680, 0.5, { type: "sawtooth", slide: 520, vol: 0.12 });
+            tone(1020, 0.5, { type: "square", slide: 760, vol: 0.06 });
+            noise(0.5, { filterType: "highpass", filter: 2600, vol: 0.08 });
+        },
+        missile() {
+            // Quick whoosh-launch for projectile salvos.
+            tone(520, 0.18, { type: "sawtooth", slide: 1080, vol: 0.07 });
+            noise(0.12, { filterType: "highpass", filter: 3200, vol: 0.06 });
+        },
+        bossswoop() {
+            // Airy dive — a falling whoosh for the flying boss.
+            tone(900, 0.3, { type: "sine", slide: 220, vol: 0.1 });
+            noise(0.3, { filterType: "bandpass", filter: 1800, filterSlide: 500, vol: 0.1 });
         }
     };
 

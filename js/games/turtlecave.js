@@ -74,16 +74,84 @@
             { top: "#2a1c12", bot: "#140c07", rock: "#3a2716", spike: "#553d28", spikeCrack: "#7c5d3f" }
         ];
 
+        // ----- ambient atmosphere -----
+        // Each cave biome gets a subtle signature: a sprinkle of drifting motes
+        // plus a faint floor mist. Kept deliberately low-alpha so it adds depth
+        // and mood without ever competing with the gameplay layer. Indexed in
+        // lockstep with BG_PALETTES.
+        const AMBIENCE = [
+            // Crystal cavern: lavender sparks rising on a slow draft.
+            { kind: "spark", mote: "210,190,255", count: 42, alpha: 0.20, drift: 7, rise: -9, mist: "120,96,190", mistA: 0.12 },
+            // Frozen grotto: pale cyan bubbles wobbling upward.
+            { kind: "bubble", mote: "175,225,240", count: 34, alpha: 0.16, drift: 5, rise: -12, mist: "90,150,170", mistA: 0.13 },
+            // Fungal hollow: pink spores settling gently downward.
+            { kind: "spore", mote: "235,175,220", count: 46, alpha: 0.17, drift: 9, rise: 7, mist: "150,80,140", mistA: 0.12 },
+            // Mossy depths: soft green pollen adrift.
+            { kind: "spore", mote: "180,230,170", count: 44, alpha: 0.16, drift: 8, rise: 4, mist: "70,140,95", mistA: 0.13 },
+            // Earthen tunnels: warm dust sifting down.
+            { kind: "dust", mote: "220,190,150", count: 50, alpha: 0.15, drift: 11, rise: 9, mist: "150,110,70", mistA: 0.14 }
+        ];
+
+        // ----- boss roster -----
+        // Each boss has a distinct silhouette, palette, movement style and a set
+        // of attacks. The flying wyvern hovers out of melee reach, nudging the
+        // player toward throwing stars. Order cycles by level.
+        const BOSS_ORDER = ["golem", "warbot", "marshking", "prowler", "wyvern", "siegebot"];
+        const BOSSES = {
+            golem: {
+                name: "CAVE GOLEM", w: 100, h: 110, flying: false,
+                body: "#7c5536", bodyLit: "#caa06a", trim: "#4a3220", eye: "#ffd166",
+                speed: 60, hpMul: 1.15, contactKnock: 360,
+                attacks: ["slam", "boulder"]
+            },
+            marshking: {
+                name: "MARSH KING", w: 96, h: 96, flying: false,
+                body: "#5a8f6a", bodyLit: "#bfe8c8", trim: "#33543c", eye: "#d6ff8a",
+                speed: 52, hpMul: 1.0, contactKnock: 300,
+                attacks: ["hop", "spit"]
+            },
+            // ----- The robot family: one chassis, three loadouts -----
+            warbot: {
+                name: "WAR TITAN", w: 104, h: 108, flying: false, shape: "warbot", variant: "titan",
+                body: "#8a93a8", bodyLit: "#cfd6e6", trim: "#4a5060", eye: "#7be6ff",
+                speed: 30, hpMul: 1.3, contactKnock: 340, keep: 230, range: 520,
+                attacks: ["salvo", "beam"]
+            },
+            siegebot: {
+                // Hulking artillery mech: lobs arcing mortar shells, then sweeps a beam.
+                name: "SIEGE WALKER", w: 116, h: 116, flying: false, shape: "warbot", variant: "siege",
+                body: "#6f7a5e", bodyLit: "#bcc7a0", trim: "#3a4030", eye: "#ffd166",
+                speed: 20, hpMul: 1.5, contactKnock: 360, keep: 300, range: 640,
+                attacks: ["mortar", "beam"]
+            },
+            prowler: {
+                // Lean assault droid: rushing rams and fast autocannon bursts.
+                name: "ASSAULT DROID", w: 90, h: 94, flying: false, shape: "warbot", variant: "assault",
+                body: "#b0505a", bodyLit: "#ecb3ba", trim: "#5c2730", eye: "#ff6464",
+                speed: 70, hpMul: 1.05, contactKnock: 380, keep: 90, range: 360, coolMul: 0.7,
+                attacks: ["charge", "rapid"]
+            },
+            wyvern: {
+                name: "CAVE WYVERN", w: 96, h: 70, flying: true,
+                body: "#7a3f86", bodyLit: "#d09ad6", trim: "#4a2350", eye: "#ff7be6",
+                speed: 168, hpMul: 0.95, contactKnock: 320, coolMul: 0.62,
+                attacks: ["dive", "fireball", "strafe"]
+            }
+        };
+        const BOSS_ENRAGE = 0.4;                     // below this HP fraction the boss enrages
+
         let W, H, groundY, ceilingY;
         let camX;
         let levelLength, level;
         let hero, platforms, enemies, gems, drops, stars, orbs, particles, chest, stalactites, ceilingDecor;
         let pal;
+        let amb, motes;                             // ambient biome flavour + drifting motes
         let enemyIdSeq = 0;
         let boss, bossSpawned, levelAdvance, victory;
         let hearts, score, weapon, alive, started;
         let bannerText, bannerTime;
         let time, rafId, lastTs;
+        let shakeT = 0, shakeMag = 0;               // screen-shake timer / strength
 
         // input state
         let touchMoveDir = 0, touchShell = false;
@@ -138,6 +206,8 @@
         function buildLevel(keepStats) {
             levelLength = Math.max(W * 2.2, 2400 + level * 360);
             pal = BG_PALETTES[(level - 1) % BG_PALETTES.length];
+            amb = AMBIENCE[(level - 1) % AMBIENCE.length];
+            buildMotes();
             platforms = [];
             enemies = [];
             gems = [];
@@ -240,6 +310,47 @@
             banner("LEVEL " + level, 1.8);
         }
 
+        // Seed the drifting ambient motes for the current biome. They live in a
+        // screen-sized field that wraps around, so a small fixed pool covers the
+        // whole level no matter how far the camera travels.
+        function buildMotes() {
+            motes = [];
+            if (!amb) return;
+            const fieldW = W + 120;
+            const fieldH = H + 120;
+            for (let i = 0; i < amb.count; i++) {
+                motes.push({
+                    x: Math.random() * fieldW,
+                    y: Math.random() * fieldH,
+                    // Depth 0 (far, small, slow parallax) .. 1 (near, larger).
+                    z: Math.random(),
+                    r: 0.6 + Math.random() * 1.8,
+                    ph: Math.random() * Math.PI * 2,        // wobble phase
+                    sp: 0.6 + Math.random() * 0.8           // per-mote speed jitter
+                });
+            }
+        }
+
+        // Drift the motes within their wrapping field. Movement is biome-driven:
+        // a gentle vertical rise/fall plus a lateral sway, scaled by depth so the
+        // nearer ones move a touch faster for a soft sense of parallax.
+        function updateMotes(dt) {
+            if (!motes || !amb) return;
+            const fieldW = W + 120;
+            const fieldH = H + 120;
+            for (const m of motes) {
+                const depth = 0.45 + m.z * 0.55;
+                m.ph += dt * m.sp;
+                m.y += amb.rise * depth * m.sp * dt;
+                m.x += (amb.drift * depth + Math.sin(m.ph) * 6) * dt;
+                // Wrap around the field so the pool covers the level endlessly.
+                if (m.y < -10) m.y = fieldH + 10;
+                else if (m.y > fieldH + 10) m.y = -10;
+                if (m.x < -10) m.x = fieldW + 10;
+                else if (m.x > fieldW + 10) m.x = -10;
+            }
+        }
+
         function makeGem(x, y) {
             return { x: x, y: y, bob: Math.random() * Math.PI * 2 };
         }
@@ -261,16 +372,23 @@
 
         function spawnBoss() {
             bossSpawned = true;
-            const kind = ["golem", "marshking", "warbot"][(level - 1) % 3];
+            const kind = BOSS_ORDER[(level - 1) % BOSS_ORDER.length];
+            const cfg = BOSSES[kind];
+            // Flyers hover above the ground; ground bosses stand on the floor.
+            const hoverY = cfg.flying ? groundY - 150 : groundY;
             boss = {
-                kind: kind, x: levelLength - 180, baseY: groundY, vx: 0, facing: -1,
-                w: 92, h: 104, maxHp: (kids ? 6 : 9) + level * 3, hp: 0,
-                state: "intro", t: 0, cd: 1.6, hitFlash: 0, lungeV: 0, lastHitSlash: -1
+                kind: kind, cfg: cfg, x: levelLength - 180, baseY: hoverY, hoverY: hoverY,
+                vx: 0, vy: 0, facing: -1, w: cfg.w, h: cfg.h,
+                maxHp: Math.round(((kids ? 6 : 9) + level * 3) * cfg.hpMul), hp: 0,
+                state: "intro", t: 0, cd: 1.6, hitFlash: 0, lungeV: 0, lastHitSlash: -1,
+                attackIx: 0, move: "", enraged: false, beamT: 0, wing: 0, anim: 0,
+                burst: 0, burstT: 0, strafeDrop: 0, diveTargetX: 0
             };
             boss.hp = boss.maxHp;
-            banner((kind === "warbot" ? "WAR TITAN" : kind === "marshking" ? "MARSH KING" : "CAVE GOLEM") + " APPEARS!", 2.2);
-            SGSound.play("gameover");
-            host.vibrate([60, 40, 60]);
+            banner(cfg.name + " APPEARS!", 2.2);
+            SGSound.play("bossroar");
+            screenShake(0.6, 9);
+            host.vibrate([60, 40, 60, 40, 80]);
         }
 
         function nextLevel() {
@@ -561,7 +679,7 @@
             for (let i = 0; i < missing; i++) {
                 spawnDrop(boss.x + (Math.random() - 0.5) * 90, boss.baseY - boss.h / 2 - Math.random() * 50, "heart");
             }
-            chest = { x: boss.x, y: groundY - 34, open: 0 };
+            chest = { x: boss.x, y: groundY - 4, open: 0 };
             enemies = [];
             orbs = [];
             boss = null;
@@ -577,6 +695,12 @@
                     life: 0.5 + Math.random() * 0.3, color: color, size: Math.random() * 3 + 2
                 });
             }
+        }
+
+        // Kick off a screen shake; stronger/larger calls win over a fading one.
+        function screenShake(dur, mag) {
+            if (dur > shakeT) shakeT = dur;
+            if (mag > shakeMag) shakeMag = mag;
         }
 
         /* ---------- collision helpers ---------- */
@@ -644,6 +768,14 @@
                 p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 700 * dt; p.life -= dt;
             }
             particles = particles.filter(p => p.life > 0);
+
+            updateMotes(dt);
+
+            // Screen-shake decays over time.
+            if (shakeT > 0) {
+                shakeT -= dt;
+                if (shakeT <= 0) { shakeT = 0; shakeMag = 0; }
+            }
         }
 
         function updateHero(dt, moveDir) {
@@ -973,66 +1105,365 @@
             if (boss.hitFlash > 0) boss.hitFlash -= dt;
             if (!started || !alive) return;
             boss.t += dt;
+            boss.anim += dt;
+            const cfg = boss.cfg;
             const dist = hero.x - boss.x;
+            const adist = Math.abs(dist);
             const faceTo = dist < 0 ? -1 : 1;
+
+            // Enrage once badly hurt: faster, with an extra angry roar.
+            if (!boss.enraged && boss.hp > 0 && boss.hp <= boss.maxHp * BOSS_ENRAGE) {
+                boss.enraged = true;
+                banner(cfg.name + " ENRAGED!", 1.4);
+                SGSound.play("bossroar");
+                screenShake(0.5, 8);
+                puff(boss.x, boss.baseY - boss.h / 2, "#ff5d5d", 22);
+            }
+            const rage = boss.enraged ? 1.4 : 1;       // speed/aggression multiplier
+            // Aggressive bosses (flyers, the assault droid) reset attacks faster.
+            const baseCool = (kids ? 2.2 : 1.7) * (cfg.coolMul || 1);
+            const cool = baseCool / rage;
+
+            // Flyers gently bob and flap wings whatever they're doing.
+            if (cfg.flying) boss.wing = Math.sin(boss.anim * 16);
 
             switch (boss.state) {
                 case "intro":
+                    if (cfg.flying) boss.baseY = boss.hoverY + Math.sin(boss.anim * 2) * 8;
                     if (boss.t >= 1.2) { boss.state = "walk"; boss.t = 0; boss.cd = 1.4; }
                     break;
+
                 case "walk": {
-                    boss.cd -= dt;
+                    boss.cd -= dt * rage;
                     boss.facing = faceTo;
-                    const sp = (boss.kind === "warbot" ? 26 : 52) * ENEMY_SPEED;
-                    if (Math.abs(dist) > 120) boss.x += boss.facing * sp * dt;
+                    if (cfg.flying) {
+                        // Stalk the hero from a modest stand-off, weaving up and
+                        // down. It presses in close enough to stay threatening
+                        // and snaps off an attack the moment its timer is ready.
+                        boss.baseY = boss.hoverY + Math.sin(boss.anim * 2.4) * 20;
+                        const want = hero.x - faceTo * 150;     // hover nearer than before
+                        const fsp = cfg.speed * rage * (Math.abs(want - boss.x) > 40 ? 1 : 0.4);
+                        boss.x += Math.sign(want - boss.x) * fsp * dt;
+                    } else {
+                        const sp = cfg.speed * ENEMY_SPEED * rage;
+                        const keep = cfg.keep || 120;
+                        if (adist > keep) boss.x += boss.facing * sp * dt;
+                    }
                     boss.x = Math.max(W * 0.5, Math.min(boss.x, levelLength - 60));
-                    const range = boss.kind === "warbot" ? 460 : 150;
-                    if (boss.cd <= 0 && Math.abs(dist) < range) { boss.state = "windup"; boss.t = 0; boss.facing = faceTo; }
+
+                    // Long-range bosses fire from afar; bruisers wait until close.
+                    const wantRange = cfg.range || (cfg.flying ? 640 : 170);
+                    if (boss.cd <= 0 && adist < wantRange) {
+                        // Alternate through the boss's attack list for variety.
+                        boss.move = cfg.attacks[boss.attackIx % cfg.attacks.length];
+                        boss.attackIx++;
+                        boss.state = "windup"; boss.t = 0; boss.facing = faceTo;
+                        SGSound.play("bosscharge");
+                    }
                     break;
                 }
-                case "windup":
-                    if (boss.t >= TELEGRAPH + 0.35) {
-                        boss.state = "attack"; boss.t = 0;
-                        if (boss.kind === "warbot") {
-                            for (let a = -1; a <= 1; a++) {
-                                orbs.push({
-                                    x: boss.x + boss.facing * 30, y: boss.baseY - boss.h * 0.6,
-                                    vx: boss.facing * 240 * ENEMY_SPEED, vy: a * 90, life: 3.5, big: true
-                                });
-                            }
-                            SGSound.play("shoot");
-                        } else {
-                            boss.lungeV = 520 * ENEMY_SPEED;
-                            SGSound.play("explode");
-                        }
-                    }
+
+                case "windup": {
+                    if (cfg.flying) boss.baseY = boss.hoverY + Math.sin(boss.anim * 2.2) * 14;
+                    // Shorter, snappier telegraph when enraged.
+                    const tele = (TELEGRAPH + 0.35) / rage;
+                    if (boss.t >= tele) { boss.state = "attack"; boss.t = 0; startBossAttack(); }
                     break;
+                }
+
                 case "attack":
-                    if (boss.kind !== "warbot") {
-                        boss.x += boss.facing * boss.lungeV * dt;
-                        boss.lungeV = Math.max(0, boss.lungeV - 760 * dt);
-                        boss.x = Math.max(W * 0.5, Math.min(boss.x, levelLength - 60));
-                        const bb = enemyBox(boss); const hb = heroBox();
-                        if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
-                    }
-                    if (boss.t >= 0.5) { boss.state = "recover"; boss.t = 0; }
+                    updateBossAttack(dt, rage);
                     break;
+
+                case "beam": {
+                    // Sustained sweeping energy beam (war titan).
+                    boss.beamT += dt;
+                    const bx = boss.x + boss.facing * 40;
+                    const by = boss.baseY - boss.h * 0.62;
+                    // The beam tilts to track the hero a little as it fires.
+                    const aimY = hero.y - 18;
+                    boss.beamAng = Math.atan2(aimY - by, boss.facing) * 0.15;
+                    // Damage along the beam line if the hero stands in it.
+                    const hb = heroBox();
+                    const beamLen = 620;
+                    const ex = bx + boss.facing * beamLen;
+                    const ey = by + Math.tan(boss.beamAng) * beamLen;
+                    if (segHitsBox(bx, by, ex, ey, 16, hb) && hero.invuln <= 0 && hero.dashIFrame <= 0) {
+                        hurtHero();
+                    }
+                    if (boss.beamT >= (boss.enraged ? 1.4 : 1.0)) { boss.state = "recover"; boss.t = 0; }
+                    break;
+                }
+
                 case "recover":
-                    if (boss.t >= 0.6) { boss.state = "walk"; boss.cd = kids ? 2.2 : 1.7; }
+                    if (cfg.flying) boss.baseY = boss.hoverY + Math.sin(boss.anim * 2.2) * 18;
+                    if (boss.t >= 0.55 / rage) { boss.state = "walk"; boss.cd = cool; }
                     break;
             }
         }
 
+        // Fire off whatever attack was queued in boss.move.
+        function startBossAttack() {
+            const b = boss;
+            const cx = b.x + b.facing * 30;
+            const cy = b.baseY - b.h * 0.6;
+            switch (b.move) {
+                case "slam":
+                    // Golem leaps forward and crashes down for a shockwave.
+                    b.lungeV = 560 * ENEMY_SPEED;
+                    b.vy = -460;
+                    SGSound.play("bosscharge");
+                    break;
+                case "boulder":
+                    // Golem hurls an arcing boulder that lands near the hero.
+                    spawnProjectile(cx, cy, b.facing * 300, -260, "rock");
+                    SGSound.play("missile");
+                    break;
+                case "hop":
+                    // Marsh king springs toward the hero.
+                    b.lungeV = 420 * ENEMY_SPEED;
+                    b.vy = -540;
+                    SGSound.play("bossswoop");
+                    break;
+                case "spit": {
+                    // Marsh king sprays a fan of poison globs.
+                    for (let a = -1; a <= 1; a++) {
+                        spawnProjectile(cx, cy, b.facing * 300, a * 150 - 60, "poison");
+                    }
+                    SGSound.play("shoot");
+                    break;
+                }
+                case "salvo": {
+                    // War titan launches a slow homing-ish missile spread.
+                    for (let a = -1; a <= 1; a++) {
+                        spawnProjectile(cx, cy, b.facing * 230, a * 120, "missile");
+                    }
+                    SGSound.play("missile");
+                    break;
+                }
+                case "mortar": {
+                    // Siege walker lobs a cluster of arcing shells that rain down
+                    // across the hero's position, forcing the player to keep moving.
+                    const spread = b.enraged ? 4 : 3;
+                    for (let i = 0; i < spread; i++) {
+                        const land = hero.x + (i - (spread - 1) / 2) * 120;
+                        const dx = land - cx;
+                        const flight = 1.1;                 // seconds aloft
+                        const vx = dx / flight;
+                        const vy = -0.5 * 320 * flight;     // arc to land after ~flight secs
+                        spawnProjectile(cx, cy - 20, vx, vy, "rock", i * 0.14);
+                    }
+                    SGSound.play("missile");
+                    screenShake(0.2, 4);
+                    break;
+                }
+                case "charge":
+                    // Assault droid dashes along the ground to ram the hero.
+                    b.lungeV = 720 * ENEMY_SPEED;
+                    SGSound.play("bosscharge");
+                    break;
+                case "rapid":
+                    // Assault droid opens up with a rapid autocannon burst; the
+                    // bullets are fired one-by-one in updateBossAttack.
+                    b.burst = b.enraged ? 6 : 4;
+                    b.burstT = 0;
+                    SGSound.play("shoot");
+                    break;
+                case "beam":
+                    // Switch into the sustained-beam state.
+                    b.state = "beam"; b.beamT = 0; b.beamAng = 0;
+                    SGSound.play("bosslaser");
+                    screenShake(0.4, 4);
+                    break;
+                case "dive":
+                    // Wyvern swoops down along an arc and homes toward the hero,
+                    // committing to the target's position at launch.
+                    b.diveTargetX = hero.x;
+                    b.facing = b.diveTargetX < b.x ? -1 : 1;
+                    b.vy = 140; b.lungeV = 460 * ENEMY_SPEED;
+                    SGSound.play("bossswoop");
+                    break;
+                case "strafe":
+                    // Wyvern makes a fast horizontal strafing pass, dropping
+                    // fireballs straight down as it crosses overhead.
+                    b.diveTargetX = hero.x;
+                    b.facing = b.diveTargetX < b.x ? -1 : 1;
+                    b.lungeV = 620 * ENEMY_SPEED;
+                    b.strafeDrop = 0;
+                    SGSound.play("bossswoop");
+                    break;
+                case "fireball": {
+                    // Wyvern spits a quick volley of fireballs aimed at the hero.
+                    const n = b.enraged ? 4 : 3;
+                    for (let i = 0; i < n; i++) {
+                        const dx = hero.x - cx, dy = (hero.y - 20) - cy;
+                        const len = Math.hypot(dx, dy) || 1;
+                        spawnProjectile(cx, cy, (dx / len) * 380, (dy / len) * 380, "fire", i * 0.1);
+                    }
+                    SGSound.play("shoot");
+                    break;
+                }
+            }
+        }
+
+        // Per-frame behaviour while an attack is mid-swing.
+        function updateBossAttack(dt, rage) {
+            const b = boss;
+            const cfg = b.cfg;
+            switch (b.move) {
+                case "slam":
+                case "hop": {
+                    // Airborne leap with gravity; a ground impact slams.
+                    b.x += b.facing * b.lungeV * dt;
+                    b.lungeV = Math.max(0, b.lungeV - 760 * dt);
+                    b.vy += GRAVITY * 0.55 * dt;
+                    b.baseY += b.vy * dt;
+                    b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
+                    const bb = enemyBox(b); const hb = heroBox();
+                    if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
+                    if (b.baseY >= b.hoverY && b.vy > 0) {
+                        // Landed: shockwave + screen shake, then recover.
+                        b.baseY = b.hoverY; b.vy = 0;
+                        bossShockwave();
+                        b.state = "recover"; b.t = 0;
+                    }
+                    break;
+                }
+                case "dive": {
+                    // Wyvern arcs down and steers toward the hero, then climbs back.
+                    const steer = b.diveTargetX < b.x ? -1 : 1;
+                    if (b.t < 0.55) b.facing = steer;       // home in during the descent
+                    b.x += b.facing * b.lungeV * dt;
+                    b.lungeV = Math.max(0, b.lungeV - 200 * dt);
+                    b.vy += GRAVITY * 0.5 * dt;
+                    b.baseY += b.vy * dt;
+                    b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
+                    const bb = enemyBox(b); const hb = heroBox();
+                    if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
+                    const floor = b.hoverY + 150;       // dive bottom near the ground
+                    if (b.baseY >= floor) { b.baseY = floor; b.vy = -300; puff(b.x, b.baseY, "#d09ad6", 10); SGSound.play("whack"); }
+                    if (b.t >= 0.85) {
+                        // Climb back to the hover line and recover.
+                        b.baseY += (b.hoverY - b.baseY) * Math.min(1, dt * 7);
+                        if (Math.abs(b.baseY - b.hoverY) < 6) { b.baseY = b.hoverY; b.state = "recover"; b.t = 0; }
+                    }
+                    break;
+                }
+                case "strafe": {
+                    // Wyvern streaks horizontally across the arena, dropping fire.
+                    b.x += b.facing * b.lungeV * dt;
+                    b.baseY = b.hoverY + 40 + Math.sin(b.anim * 5) * 6;
+                    b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
+                    const bb = enemyBox(b); const hb = heroBox();
+                    if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h)) hurtHero();
+                    // Rain a fireball straight down at a steady cadence.
+                    b.strafeDrop -= dt;
+                    if (b.strafeDrop <= 0) {
+                        b.strafeDrop = 0.16;
+                        spawnProjectile(b.x, b.baseY - b.h * 0.4, b.facing * 60, 220, "fire");
+                    }
+                    if (b.t >= 0.85) {
+                        b.baseY += (b.hoverY - b.baseY) * Math.min(1, dt * 7);
+                        if (Math.abs(b.baseY - b.hoverY) < 6) { b.baseY = b.hoverY; b.state = "recover"; b.t = 0; }
+                    }
+                    break;
+                }
+                case "charge": {
+                    // Assault droid barrels forward; ramming the hero hurts and
+                    // knocks them back, and it stops once its momentum bleeds off.
+                    b.x += b.facing * b.lungeV * dt;
+                    b.lungeV = Math.max(0, b.lungeV - 620 * dt);
+                    b.x = Math.max(W * 0.5, Math.min(b.x, levelLength - 60));
+                    const bb = enemyBox(b); const hb = heroBox();
+                    if (overlap(bb.x, bb.y, bb.w, bb.h, hb.x, hb.y, hb.w, hb.h) && hero.invuln <= 0 && hero.dashIFrame <= 0) {
+                        hurtHero();
+                        hero.vx = b.facing * 420; hero.vy = -220;
+                        puff(hero.x, hero.y - hero.h / 2, "#ff8a8a", 10);
+                    }
+                    if (b.lungeV <= 4) { b.state = "recover"; b.t = 0; }
+                    break;
+                }
+                case "rapid": {
+                    // Fire one autocannon round at a time until the burst is spent.
+                    b.burstT -= dt;
+                    if (b.burst > 0 && b.burstT <= 0) {
+                        b.burstT = 0.12;
+                        b.burst--;
+                        const cx = b.x + b.facing * 36, cy = b.baseY - b.h * 0.62;
+                        const dx = hero.x - cx, dy = (hero.y - 24) - cy;
+                        const len = Math.hypot(dx, dy) || 1;
+                        const spread = (Math.random() - 0.5) * 0.12;
+                        spawnProjectile(cx, cy, (dx / len) * 520 + spread * 200, (dy / len) * 520, "fire");
+                        SGSound.play("shoot");
+                    }
+                    if (b.burst <= 0) { b.state = "recover"; b.t = 0; }
+                    break;
+                }
+                default:
+                    // Projectile attacks have no follow-through; brief recovery.
+                    if (b.t >= 0.35) { b.state = "recover"; b.t = 0; }
+                    break;
+            }
+        }
+
+        // Ground shock from a heavy landing: knockback + damage near the impact.
+        function bossShockwave() {
+            SGSound.play("bossslam");
+            screenShake(0.45, 11);
+            host.vibrate([20, 30, 20]);
+            puff(boss.x, boss.baseY, "#caa06a", 20);
+            const hb = heroBox();
+            // A grounded hero within the blast gets hurt and knocked.
+            if (hero.onGround && Math.abs(hero.x - boss.x) < 150 && hero.invuln <= 0 && hero.dashIFrame <= 0) {
+                hurtHero();
+                hero.vx = (hero.x < boss.x ? -1 : 1) * 360;
+                hero.vy = -260;
+            }
+        }
+
+        // Spawn a typed boss projectile into the shared orbs pool.
+        function spawnProjectile(x, y, vx, vy, type, delay) {
+            orbs.push({
+                x: x, y: y, vx: vx, vy: vy, life: 3.4, type: type,
+                big: type === "rock" || type === "missile",
+                grav: type === "rock" || type === "poison" ? 320 : 0,
+                spin: Math.random() * Math.PI, delay: delay || 0
+            });
+        }
+
+        // Distance from a box centre to a line segment, for the sweeping beam.
+        function segHitsBox(x1, y1, x2, y2, pad, box) {
+            const cxb = box.x + box.w / 2, cyb = box.y + box.h / 2;
+            const dx = x2 - x1, dy = y2 - y1;
+            const len2 = dx * dx + dy * dy || 1;
+            let t = ((cxb - x1) * dx + (cyb - y1) * dy) / len2;
+            t = Math.max(0, Math.min(1, t));
+            const px = x1 + dx * t, py = y1 + dy * t;
+            const d = Math.hypot(cxb - px, cyb - py);
+            return d < pad + Math.max(box.w, box.h) / 2;
+        }
+
         function updateOrbs(dt) {
             for (const o of orbs) {
+                // Staggered volley shots wait out their delay before flying.
+                if (o.delay > 0) { o.delay -= dt; continue; }
+                if (o.grav) o.vy += o.grav * dt;
                 o.x += o.vx * dt; o.y += o.vy * dt; o.life -= dt;
+                if (o.spin !== undefined) o.spin += dt * 6;
                 const r = o.big ? 16 : 11;
                 const hb = heroBox();
                 if (overlap(o.x - r, o.y - r, r * 2, r * 2, hb.x, hb.y, hb.w, hb.h)) {
-                    hurtHero(); o.life = 0;
+                    if (hero.invuln <= 0 && hero.dashIFrame <= 0) hurtHero();
+                    o.life = 0;
+                    puff(o.x, o.y, o.type === "poison" ? "#bdf08a" : "#ff9a5d", 8);
+                }
+                // Gravity-bound shots shatter on the cave floor.
+                if (o.grav && o.y > groundY) {
+                    o.life = 0;
+                    puff(o.x, groundY, o.type === "poison" ? "#bdf08a" : "#caa06a", 8);
                 }
             }
-            orbs = orbs.filter(o => o.life > 0 && o.x > camX - 60 && o.x < camX + W + 60);
+            orbs = orbs.filter(o => o.life > 0 && o.x > camX - 80 && o.x < camX + W + 80);
         }
 
         function updatePickups(dt) {
@@ -1170,10 +1601,18 @@
             drawBackground();
 
             ctx.save();
-            ctx.translate(-camX, 0);
+            // Screen-shake jitters the world layer (HUD stays steady).
+            let shx = 0, shy = 0;
+            if (shakeT > 0) {
+                const s = shakeMag * Math.min(1, shakeT * 3);
+                shx = (Math.random() - 0.5) * s * 2;
+                shy = (Math.random() - 0.5) * s * 2;
+            }
+            ctx.translate(-camX + shx, shy);
 
             drawGround();
             drawCeiling();
+            drawMist();
             for (const p of platforms) {
                 if (p.x + p.w < camX - 20 || p.x > camX + W + 20) continue;
                 if (p.bounce > 0) p.bounce = Math.max(0, p.bounce - 0.06);
@@ -1216,6 +1655,8 @@
 
             ctx.restore();
 
+            drawMotes();
+
             drawHud();
         }
 
@@ -1241,6 +1682,80 @@
                 ctx.fill();
             }
             ctx.globalAlpha = 1;
+        }
+
+        // Soft mist hugging the cave floor. Drawn in the world layer so it sits
+        // behind the action; a low-alpha gradient plus a couple of slow swells
+        // give a faint sense of settling fog without obscuring anything.
+        function drawMist() {
+            if (!amb) return;
+            const bandH = 88;
+            const top = groundY - bandH;
+            const g = ctx.createLinearGradient(0, top, 0, groundY);
+            g.addColorStop(0, "rgba(" + amb.mist + ",0)");
+            g.addColorStop(1, "rgba(" + amb.mist + "," + amb.mistA + ")");
+            ctx.fillStyle = g;
+            ctx.fillRect(camX, top, W, bandH);
+            // A few broad swells drifting along the floor for subtle motion.
+            ctx.fillStyle = "rgba(" + amb.mist + "," + (amb.mistA * 0.6).toFixed(3) + ")";
+            for (let i = 0; i < 5; i++) {
+                const cx = camX + ((i * 260 + time * 14) % (W + 320)) - 160;
+                const sw = 150 + Math.sin(time * 0.6 + i) * 26;
+                const cy = groundY - 16 - Math.sin(time * 0.5 + i * 1.7) * 8;
+                ctx.beginPath();
+                ctx.ellipse(cx, cy, sw, 26, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Drifting ambient motes rendered in screen space. A gentle parallax tied
+        // to the camera gives depth; styling varies per biome (sparks, bubbles,
+        // spores, dust). Everything stays very low-alpha to avoid distraction.
+        function drawMotes() {
+            if (!motes || !amb) return;
+            const fieldW = W + 120;
+            const kind = amb.kind;
+            ctx.save();
+            for (const m of motes) {
+                const depth = 0.45 + m.z * 0.55;
+                // Parallax: nearer motes (higher depth) slide more with the camera.
+                let sx = (m.x - camX * depth * 0.35) % fieldW;
+                if (sx < 0) sx += fieldW;
+                sx -= 60;
+                const sy = m.y - 60;
+                if (sx < -10 || sx > W + 10) continue;
+                const a = amb.alpha * (0.5 + m.z * 0.5);
+                const rr = m.r * (0.7 + m.z * 0.8);
+                if (kind === "bubble") {
+                    ctx.globalAlpha = a;
+                    ctx.strokeStyle = "rgba(" + amb.mote + ",1)";
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.arc(sx, sy, rr + 0.6, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.globalAlpha = a * 0.5;
+                    ctx.fillStyle = "rgba(" + amb.mote + ",1)";
+                    ctx.beginPath();
+                    ctx.arc(sx - rr * 0.3, sy - rr * 0.3, rr * 0.4, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (kind === "spark") {
+                    // Twinkle: alpha pulses with the wobble phase.
+                    ctx.globalAlpha = a * (0.55 + 0.45 * (0.5 + 0.5 * Math.sin(m.ph * 2)));
+                    ctx.fillStyle = "rgba(" + amb.mote + ",1)";
+                    ctx.beginPath();
+                    ctx.arc(sx, sy, rr, 0, Math.PI * 2);
+                    ctx.fill();
+                } else {
+                    // spore / dust: plain soft dot.
+                    ctx.globalAlpha = a;
+                    ctx.fillStyle = "rgba(" + amb.mote + ",1)";
+                    ctx.beginPath();
+                    ctx.arc(sx, sy, rr, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+            ctx.globalAlpha = 1;
+            ctx.restore();
         }
 
         function drawGround() {
@@ -1424,7 +1939,50 @@
         }
 
         function drawOrb(o) {
+            if (o.delay > 0) return;        // not launched yet
+            const type = o.type || "fire";
             const r = o.big ? 15 : 11;
+            if (type === "rock") {
+                // Tumbling boulder.
+                ctx.save();
+                ctx.translate(o.x, o.y);
+                ctx.rotate(o.spin || 0);
+                ctx.fillStyle = "#6f4d30";
+                roundRect(-r, -r, r * 2, r * 2, 5);
+                ctx.fillStyle = "#8a6440";
+                roundRect(-r + 3, -r + 3, r, r, 3);
+                ctx.restore();
+                return;
+            }
+            if (type === "poison") {
+                // Wobbling green glob with a glow.
+                const grad = ctx.createRadialGradient(o.x, o.y, 1, o.x, o.y, r);
+                grad.addColorStop(0, "#eaffc2");
+                grad.addColorStop(0.5, "#8fd94f");
+                grad.addColorStop(1, "rgba(80,150,40,0.1)");
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(o.x, o.y, r, 0, Math.PI * 2);
+                ctx.fill();
+                return;
+            }
+            if (type === "missile") {
+                // Steel slug with a flame tail.
+                ctx.save();
+                ctx.translate(o.x, o.y);
+                ctx.rotate(Math.atan2(o.vy, o.vx));
+                ctx.fillStyle = "rgba(255,160,80,0.6)";
+                ctx.beginPath();
+                ctx.moveTo(-r, 0); ctx.lineTo(-r - 14, -4); ctx.lineTo(-r - 14, 4);
+                ctx.closePath(); ctx.fill();
+                ctx.fillStyle = "#cfd6e6";
+                roundRect(-r, -5, r * 2, 10, 4);
+                ctx.fillStyle = "#7be6ff";
+                roundRect(r - 4, -3, 4, 6, 2);
+                ctx.restore();
+                return;
+            }
+            // Default fireball (fire / generic).
             const grad = ctx.createRadialGradient(o.x, o.y, 1, o.x, o.y, r);
             grad.addColorStop(0, "#fff2b0");
             grad.addColorStop(0.5, "#ff7b3d");
@@ -1499,23 +2057,263 @@
         }
 
         function drawBoss(b) {
+            const cfg = b.cfg;
             const winding = b.state === "windup";
             const wob = winding ? Math.sin(time * 26) * 3 : 0;
+            const eye = (winding || b.enraged) ? "#ff3b3b" : cfg.eye;
+
+            // Ground shadow — emphasises that the wyvern is airborne.
+            if (cfg.flying) {
+                ctx.save();
+                ctx.translate(b.x, b.baseY);
+                ctx.fillStyle = "rgba(0,0,0,0.22)";
+                ctx.beginPath();
+                ctx.ellipse(0, groundY - b.baseY, b.w * 0.42, 10, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+
             ctx.save();
             ctx.translate(b.x + wob, b.baseY);
             if (b.hitFlash > 0) ctx.globalAlpha = 0.6;
-            const base = winding ? "#ffd166" : (b.kind === "marshking" ? "#fff7ef" : b.kind === "warbot" ? "#9aa3b5" : "#b07a4a");
-            ctx.fillStyle = base;
-            roundRect(-b.w / 2, -b.h, b.w, b.h, 16);
-            ctx.fillStyle = "rgba(0,0,0,0.18)";
-            roundRect(-b.w / 2, -b.h * 0.4, b.w, b.h * 0.4, 12);
-            // eyes
-            ctx.fillStyle = winding ? "#ff3b3b" : "#ffe08a";
-            if (winding) { ctx.shadowColor = "#ff3b3b"; ctx.shadowBlur = 18; }
-            ctx.beginPath();
-            ctx.arc(-14, -b.h * 0.62, 8, 0, Math.PI * 2);
-            ctx.arc(16, -b.h * 0.62, 8, 0, Math.PI * 2);
-            ctx.fill();
+            if (winding) { ctx.shadowColor = "#ffcf5d"; ctx.shadowBlur = 22; }
+            else if (b.enraged) { ctx.shadowColor = "#ff4d4d"; ctx.shadowBlur = 14; }
+            ctx.scale(b.facing, 1);             // local +x faces the hero
+
+            const W2 = b.w, H2 = b.h;
+            const lineSeg = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+
+            if (b.kind === "golem") {
+                // ----- Hulking rock golem -----
+                const stomp = (b.move === "slam" && b.state === "attack") ? 4 : 0;
+                ctx.fillStyle = cfg.trim;
+                roundRect(-W2 * 0.34, -26, 26, 26, 6);                       // legs
+                roundRect(W2 * 0.34 - 26, -26, 26, 26, 6);
+                ctx.fillStyle = cfg.body;
+                roundRect(-W2 / 2, -H2 * 0.78, W2, H2 * 0.6, 22);            // torso boulder
+                ctx.fillStyle = cfg.bodyLit;
+                roundRect(-W2 / 2 + 8, -H2 * 0.78, W2 - 16, H2 * 0.22, 16);  // lit shoulders
+                // glowing cracks
+                ctx.strokeStyle = b.enraged ? "rgba(255,90,60,0.7)" : "rgba(255,209,102,0.4)";
+                ctx.lineWidth = 3; ctx.lineCap = "round";
+                lineSeg(-10, -H2 * 0.7, 6, -H2 * 0.5);
+                lineSeg(6, -H2 * 0.5, -4, -H2 * 0.3);
+                // arms
+                ctx.fillStyle = cfg.body;
+                roundRect(-W2 / 2 - 14, -H2 * 0.62, 20, H2 * 0.46, 9);       // back arm
+                roundRect(W2 / 2 - 8, -H2 * 0.64 + stomp, 24, H2 * 0.5, 10); // front arm
+                ctx.fillStyle = cfg.trim;
+                roundRect(W2 / 2 - 12, -H2 * 0.2 + stomp, 30, 26, 9);        // big fist
+                // head
+                ctx.fillStyle = cfg.bodyLit;
+                roundRect(-22, -H2, 44, H2 * 0.28, 12);
+                ctx.fillStyle = eye;
+                if (winding || b.enraged) { ctx.shadowColor = "#ff3b3b"; ctx.shadowBlur = 14; }
+                ctx.fillRect(-14, -H2 * 0.9, 11, 7);
+                ctx.fillRect(5, -H2 * 0.9, 11, 7);
+            } else if (b.kind === "marshking") {
+                // ----- Bloated marsh toad-king -----
+                const breathe = Math.sin(b.anim * 4) * 2;
+                ctx.fillStyle = cfg.trim;
+                roundRect(-W2 / 2 + 4, -20, 22, 20, 8);                      // squat legs
+                roundRect(W2 / 2 - 26, -20, 22, 20, 8);
+                ctx.fillStyle = cfg.body;
+                ctx.beginPath();
+                ctx.ellipse(0, -H2 * 0.42, W2 * 0.52, H2 * 0.46 + breathe, 0, 0, Math.PI * 2); // body dome
+                ctx.fill();
+                ctx.fillStyle = cfg.bodyLit;
+                ctx.beginPath();
+                ctx.ellipse(-6, -H2 * 0.52, W2 * 0.3, H2 * 0.22, 0, 0, Math.PI * 2);           // belly sheen
+                ctx.fill();
+                // wide mouth
+                ctx.fillStyle = "#2c3d2c";
+                roundRect(-W2 * 0.34, -H2 * 0.34, W2 * 0.68, 10, 5);
+                if (b.state === "attack" && b.move === "spit") {
+                    ctx.fillStyle = "#9fe04f";
+                    roundRect(W2 * 0.2, -H2 * 0.38, 16, 14, 6);             // puffed cheek
+                }
+                // bulging eyes
+                ctx.fillStyle = "#f6fff0";
+                ctx.beginPath();
+                ctx.arc(-13, -H2 * 0.66, 11, 0, Math.PI * 2);
+                ctx.arc(15, -H2 * 0.66, 11, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = eye;
+                ctx.beginPath();
+                ctx.arc(-13, -H2 * 0.66, 5, 0, Math.PI * 2);
+                ctx.arc(15, -H2 * 0.66, 5, 0, Math.PI * 2);
+                ctx.fill();
+                // little crown
+                ctx.fillStyle = "#ffd54a";
+                ctx.beginPath();
+                ctx.moveTo(-20, -H2 * 0.82);
+                ctx.lineTo(-12, -H2 * 0.98); ctx.lineTo(-4, -H2 * 0.84);
+                ctx.lineTo(4, -H2 * 0.98); ctx.lineTo(12, -H2 * 0.84);
+                ctx.lineTo(20, -H2 * 0.98); ctx.lineTo(22, -H2 * 0.8);
+                ctx.lineTo(-22, -H2 * 0.8); ctx.closePath();
+                ctx.fill();
+            } else if (cfg.shape === "warbot") {
+                // ----- Armoured robot chassis (war titan / siege / assault) -----
+                const variant = cfg.variant || "titan";
+                // Sweeping energy beam (drawn behind the chassis).
+                if (b.state === "beam") {
+                    const cxn = 40, cyn = -H2 * 0.62;
+                    const exn = cxn + 620, eyn = cyn + Math.tan(b.beamAng || 0) * 620;
+                    const flick = 1 + Math.sin(time * 50) * 0.18;
+                    ctx.save();
+                    ctx.globalCompositeOperation = "lighter";
+                    ctx.lineCap = "round";
+                    ctx.strokeStyle = "rgba(123,230,255,0.22)"; ctx.lineWidth = 30 * flick; lineSeg(cxn, cyn, exn, eyn);
+                    ctx.strokeStyle = "rgba(170,240,255,0.5)"; ctx.lineWidth = 14 * flick; lineSeg(cxn, cyn, exn, eyn);
+                    ctx.strokeStyle = "#eaffff"; ctx.lineWidth = 5 * flick; lineSeg(cxn, cyn, exn, eyn);
+                    ctx.restore();
+                }
+                ctx.fillStyle = cfg.trim;
+                if (variant === "siege") {
+                    // Tracked base instead of legs.
+                    ctx.fillStyle = "#2c3022";
+                    roundRect(-W2 / 2 - 4, -26, W2 + 8, 26, 8);             // tread housing
+                    ctx.fillStyle = cfg.trim;
+                    for (let tx = -W2 / 2 + 4; tx < W2 / 2 - 4; tx += 16) {
+                        roundRect(tx, -20, 10, 14, 3);                       // tread links
+                    }
+                    ctx.fillStyle = cfg.bodyLit;
+                    ctx.beginPath(); ctx.arc(-W2 / 2 + 6, -13, 6, 0, Math.PI * 2);
+                    ctx.arc(W2 / 2 - 6, -13, 6, 0, Math.PI * 2); ctx.fill(); // drive wheels
+                } else if (variant === "assault") {
+                    // Lean digitigrade legs.
+                    roundRect(-W2 * 0.3, -26, 14, 26, 5);
+                    roundRect(W2 * 0.3 - 14, -26, 14, 26, 5);
+                    ctx.fillStyle = cfg.body;
+                    roundRect(-W2 * 0.3 - 2, -8, 20, 8, 3);                 // back foot
+                    roundRect(W2 * 0.3 - 18, -8, 20, 8, 3);                 // front foot
+                } else {
+                    roundRect(-W2 * 0.32, -28, 22, 28, 5);                   // piston legs
+                    roundRect(W2 * 0.32 - 22, -28, 22, 28, 5);
+                }
+                ctx.fillStyle = cfg.body;
+                roundRect(-W2 / 2, -H2 * 0.8, W2, H2 * 0.64, 10);            // chassis
+                ctx.fillStyle = cfg.bodyLit;
+                roundRect(-W2 / 2 + 7, -H2 * 0.78, W2 - 14, H2 * 0.16, 6);   // chest plate
+                ctx.fillStyle = cfg.trim;
+                roundRect(-W2 / 2 + 10, -H2 * 0.5, W2 - 20, 8, 3);          // vent slats
+                roundRect(-W2 / 2 + 10, -H2 * 0.4, W2 - 20, 8, 3);
+                // Forward weapon — differs per loadout.
+                const firing = b.state === "attack" || b.state === "beam";
+                if (variant === "siege") {
+                    // Big upward-angled mortar tube + side bracing.
+                    ctx.fillStyle = cfg.body;
+                    roundRect(W2 / 2 - 10, -H2 * 0.74, 22, 30, 5);           // shoulder mount
+                    ctx.save();
+                    ctx.translate(W2 / 2 + 6, -H2 * 0.72);
+                    ctx.rotate(-0.5);
+                    ctx.fillStyle = cfg.trim;
+                    roundRect(0, -10, 40, 20, 6);                            // mortar barrel
+                    ctx.fillStyle = "#26120a";
+                    ctx.beginPath(); ctx.ellipse(40, 0, 5, 9, 0, 0, Math.PI * 2); ctx.fill();
+                    if (b.state === "attack" && b.move === "mortar") {
+                        ctx.fillStyle = "#ffd166";
+                        ctx.beginPath(); ctx.arc(44, 0, 6, 0, Math.PI * 2); ctx.fill(); // muzzle flash
+                    }
+                    ctx.restore();
+                } else if (variant === "assault") {
+                    // Twin autocannons that flicker while bursting.
+                    ctx.fillStyle = cfg.body;
+                    roundRect(W2 / 2 - 6, -H2 * 0.72, 16, 22, 4);
+                    ctx.fillStyle = cfg.trim;
+                    roundRect(W2 / 2 + 6, -H2 * 0.7, 28, 7, 3);              // upper barrel
+                    roundRect(W2 / 2 + 6, -H2 * 0.58, 28, 7, 3);            // lower barrel
+                    const flashAss = (b.state === "attack" && b.move === "rapid" && Math.floor(time * 30) % 2 === 0);
+                    ctx.fillStyle = flashAss ? "#fff2a0" : eye;
+                    ctx.beginPath(); ctx.arc(W2 / 2 + 36, -H2 * 0.665, 4, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(W2 / 2 + 36, -H2 * 0.545, 4, 0, Math.PI * 2); ctx.fill();
+                } else {
+                    // War titan beam cannon.
+                    ctx.fillStyle = cfg.body;
+                    roundRect(W2 / 2 - 6, -H2 * 0.7, 20, 26, 5);
+                    ctx.fillStyle = cfg.trim;
+                    roundRect(W2 / 2 + 10, -H2 * 0.7, 26, 22, 6);            // barrel
+                    ctx.fillStyle = (b.state === "beam") ? "#eaffff" : eye;
+                    ctx.beginPath(); ctx.arc(W2 / 2 + 36, -H2 * 0.59, 7, 0, Math.PI * 2); ctx.fill(); // muzzle
+                }
+                // head + visor
+                ctx.fillStyle = cfg.body;
+                roundRect(-18, -H2, 36, H2 * 0.22, 6);
+                ctx.fillStyle = eye;
+                if (winding || b.enraged) { ctx.shadowColor = "#ff3b3b"; ctx.shadowBlur = 12; }
+                roundRect(-12, -H2 * 0.92, 24, 6, 3);                        // visor slit
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = cfg.trim;
+                ctx.fillRect(-1, -H2 - 12, 2, 12);                           // antenna
+                ctx.fillStyle = eye;
+                ctx.beginPath(); ctx.arc(0, -H2 - 13, 3, 0, Math.PI * 2); ctx.fill();
+            } else {
+                // ----- Flying cave wyvern -----
+                const flap = b.wing || Math.sin(b.anim * 16);
+                const diving = b.state === "attack" && b.move === "dive";
+                // wings (behind body)
+                ctx.fillStyle = cfg.trim;
+                for (const side of [-1, 1]) {
+                    ctx.save();
+                    ctx.translate(0, -H2 * 0.6);
+                    ctx.rotate(side * (0.5 + flap * 0.5));
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.quadraticCurveTo(side * W2 * 0.55, -H2 * 0.4, side * W2 * 0.7, H2 * 0.1);
+                    ctx.quadraticCurveTo(side * W2 * 0.4, H2 * 0.05, 0, H2 * 0.18);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.restore();
+                }
+                // membrane highlight
+                ctx.fillStyle = cfg.bodyLit;
+                for (const side of [-1, 1]) {
+                    ctx.save();
+                    ctx.translate(0, -H2 * 0.6);
+                    ctx.rotate(side * (0.5 + flap * 0.5));
+                    ctx.globalAlpha = 0.4;
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.quadraticCurveTo(side * W2 * 0.4, -H2 * 0.25, side * W2 * 0.55, H2 * 0.05);
+                    ctx.quadraticCurveTo(side * W2 * 0.3, 0, 0, H2 * 0.12);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.restore();
+                }
+                ctx.globalAlpha = (b.hitFlash > 0) ? 0.6 : 1;
+                // body
+                ctx.fillStyle = cfg.body;
+                ctx.beginPath();
+                ctx.ellipse(0, -H2 * 0.5, W2 * 0.26, H2 * 0.4, 0, 0, Math.PI * 2);
+                ctx.fill();
+                // tail trailing back
+                ctx.strokeStyle = cfg.body; ctx.lineWidth = 8; ctx.lineCap = "round";
+                lineSeg(-W2 * 0.18, -H2 * 0.4, -W2 * 0.5, -H2 * 0.1);
+                ctx.fillStyle = cfg.trim;
+                ctx.beginPath();
+                ctx.moveTo(-W2 * 0.5, -H2 * 0.1);
+                ctx.lineTo(-W2 * 0.62, -H2 * 0.02); ctx.lineTo(-W2 * 0.5, -H2 * 0.22);
+                ctx.closePath(); ctx.fill();
+                // clawed legs
+                ctx.strokeStyle = cfg.trim; ctx.lineWidth = 5;
+                lineSeg(-6, -H2 * 0.18, -8, 0);
+                lineSeg(8, -H2 * 0.18, 10, 0);
+                // head (forward) with horn
+                ctx.fillStyle = cfg.bodyLit;
+                ctx.beginPath();
+                ctx.ellipse(W2 * 0.22, -H2 * (diving ? 0.42 : 0.62), W2 * 0.16, H2 * 0.2, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = cfg.trim;
+                ctx.beginPath();
+                ctx.moveTo(W2 * 0.3, -H2 * 0.78);
+                ctx.lineTo(W2 * 0.4, -H2 * 0.95); ctx.lineTo(W2 * 0.34, -H2 * 0.72);
+                ctx.closePath(); ctx.fill();                                 // horn
+                ctx.fillStyle = eye;
+                if (winding || b.enraged) { ctx.shadowColor = "#ff3b3b"; ctx.shadowBlur = 12; }
+                ctx.beginPath();
+                ctx.arc(W2 * 0.28, -H2 * (diving ? 0.46 : 0.66), 5, 0, Math.PI * 2);
+                ctx.fill();
+            }
             ctx.shadowBlur = 0;
             ctx.restore();
         }
@@ -1870,7 +2668,7 @@
                 ctx.fillStyle = "#f2f3ff";
                 ctx.font = "800 11px system-ui, sans-serif";
                 ctx.textAlign = "center";
-                ctx.fillText("BOSS", W / 2, by + 10);
+                ctx.fillText(boss.cfg ? boss.cfg.name : "BOSS", W / 2, by + 10);
             }
 
             // Dash cooldown pip
