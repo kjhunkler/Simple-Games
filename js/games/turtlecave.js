@@ -22,6 +22,7 @@
         const SLASH_ACTIVE = 0.15;
         const SLASH_RANGE = 66;                     // big sword reach
         const SLASH_HEIGHT = 54;
+        const SWORD_LUNGE_V = 300;                  // slight hop toward an out-of-reach foe
         const SPIN_DUR = 0.42;                       // 3rd combo hit: spin attack
         const SPIN_ACTIVE = 0.32;
         const SPIN_RANGE = 82;                       // spin reaches both sides
@@ -40,8 +41,6 @@
         const SHELL_DROP_TIME = 1.0;                // hold shell on a ledge this long to fall through
         const BOUNCE_V = JUMP_V * 1.35;             // mushroom platform launch speed
         const DOUBLE_JUMP_V = JUMP_V * 0.9;         // second, mid-air jump
-        const STAR_DASH_MULT = 1.8;                 // stars make the dash travel farther
-        const SLOW_FALL_MAX = 150;                  // glide speed while holding stars
         const SHELL_FALL_MIN = 1150;                // shell plummets at least this fast
         const SHELL_GRAVITY_MULT = 1.7;             // extra gravity while shelled mid-air
         const SHELL_SLAM_MINVY = 680;               // fall speed needed to trigger a slam
@@ -54,7 +53,6 @@
         const SWIPE_THRESH = 38;
         const TAP_MAX_MOVE = 16;
         const TAP_MAX_TIME = 260;
-        const JUMP_ANGLE_MIN = Math.PI / 6;          // 30°: lean the jump past this
         const JUMP_LEAN = 0.55;                      // how much sideways speed a leaning jump gets
 
         // Each cave level recolours the cave a little.
@@ -220,7 +218,7 @@
                 dashTime: 0, dashCd: 0, dashIFrame: 0, dashUsed: false, dashHit: {},
                 shell: false, invuln: 0, shellHold: 0, fallThrough: 0, jumpsUsed: 0,
                 attackTime: 0, attackDur: ATTACK_DUR, attackCd: 0, slashId: 0,
-                comboStep: 0, comboTimer: 0, attackSpin: false, py: groundY
+                comboStep: 0, comboTimer: 0, attackSpin: false, py: groundY, lunge: 0
             };
             if (!keepStats) {
                 hearts = MAX_HEARTS;
@@ -285,7 +283,8 @@
             }
             started = true;
             hero.vy = -(hero.jumpsUsed >= 2 ? DOUBLE_JUMP_V : JUMP_V);
-            // Swiping at a steep enough angle leans the jump that way.
+            // Lean the jump along the swipe: leanX is the swipe's horizontal
+            // component (-1..1), so a more sideways swipe carries further across.
             if (leanX) {
                 hero.vx = leanX * JUMP_V * JUMP_LEAN;
                 hero.facing = leanX < 0 ? -1 : 1;
@@ -302,8 +301,7 @@
             hero.vx = (dx / len) * DASH_SPEED;
             hero.vy = (dy / len) * DASH_SPEED;
             if (Math.abs(dy) < 0.2) hero.vy = 0;
-            // Stars trade the sword's dash-damage for a longer glide-dash.
-            const dur = DASH_TIME * (weapon === "star" ? STAR_DASH_MULT : 1);
+            const dur = DASH_TIME;
             hero.dashTime = dur;
             hero.dashCd = DASH_CD;
             hero.dashIFrame = dur + 0.06;
@@ -324,6 +322,15 @@
                 const target = nearestEnemy();
                 if (target && Math.abs(target.x - hero.x) > 6) {
                     hero.facing = target.x < hero.x ? -1 : 1;
+                }
+
+                // If the nearest foe is just out of the sword's reach, hop a
+                // little toward it so the swing isn't wasted on empty air.
+                if (target) {
+                    const gap = Math.abs(target.x - hero.x) - (target.w || 0) / 2;
+                    if (gap > SLASH_RANGE) {
+                        hero.lunge = (target.x < hero.x ? -1 : 1) * SWORD_LUNGE_V;
+                    }
                 }
 
                 // Advance the 3-hit combo; the window resets if you wait too long.
@@ -347,26 +354,40 @@
                     host.vibrate(8);
                 }
             } else {
-                // A click/tap turns the turtle to face the press before throwing.
-                if (aim) {
+                // Clicking in the floor area auto-targets the closest enemy;
+                // clicking above the floor throws the star toward the press.
+                const floorAim = aim && aim.y >= groundY;
+                const target = floorAim ? nearestEnemy() : null;
+
+                // Turn the turtle to face the auto-target, or the press.
+                if (target) {
+                    if (Math.abs(target.x - hero.x) > 6) hero.facing = target.x < hero.x ? -1 : 1;
+                } else if (aim && !floorAim) {
                     const ax = aim.x + camX;
                     if (Math.abs(ax - hero.x) > 6) hero.facing = ax < hero.x ? -1 : 1;
                 }
                 hero.attackDur = ATTACK_DUR;
                 hero.attackTime = ATTACK_DUR;
                 hero.attackCd = 0.3;
-                // Stars fly toward the press; otherwise straight ahead.
+                // Stars home on the auto-target, fly toward the press, or go straight ahead.
+                const ox = hero.x + hero.facing * 18, oy = hero.y - hero.h / 2;
                 let vx = hero.facing * STAR_SPEED, vy = 0;
-                if (aim) {
+                if (target) {
+                    const dx = target.x - ox;
+                    const dy = (target.baseY - target.h / 2) - oy;
+                    const len = Math.hypot(dx, dy) || 1;
+                    vx = (dx / len) * STAR_SPEED;
+                    vy = (dy / len) * STAR_SPEED;
+                } else if (aim && !floorAim) {
                     const tx = aim.x + camX, ty = aim.y;
-                    let dx = tx - (hero.x + hero.facing * 18);
-                    let dy = ty - (hero.y - hero.h / 2);
+                    const dx = tx - ox;
+                    const dy = ty - oy;
                     const len = Math.hypot(dx, dy) || 1;
                     vx = (dx / len) * STAR_SPEED;
                     vy = (dy / len) * STAR_SPEED;
                 }
                 stars.push({
-                    x: hero.x + hero.facing * 18, y: hero.y - hero.h / 2,
+                    x: ox, y: oy,
                     vx: vx, vy: vy, life: 1.1, rot: 0
                 });
                 SGSound.play("shoot");
@@ -378,11 +399,11 @@
         function nearestEnemy() {
             let best = null, bestD = Infinity;
             for (const e of enemies) {
-                const d = Math.abs(e.x - hero.x);
+                const d = Math.hypot(e.x - hero.x, e.baseY - hero.y);
                 if (d < bestD) { bestD = d; best = e; }
             }
             if (boss && boss.state !== "dying" && boss.state !== "intro") {
-                const d = Math.abs(boss.x - hero.x);
+                const d = Math.hypot(boss.x - hero.x, boss.baseY - hero.y);
                 if (d < bestD) { bestD = d; best = boss; }
             }
             return best;
@@ -586,10 +607,6 @@
                     // Shell makes the turtle plummet hard for a ground slam.
                     hero.vy += GRAVITY * SHELL_GRAVITY_MULT * dt;
                     if (hero.vy > 0 && hero.vy < SHELL_FALL_MIN) hero.vy = SHELL_FALL_MIN;
-                } else if (weapon === "star" && !hero.onGround && hero.vy > 0 && !hero.shell) {
-                    // Stars equipped: glide down gently unless tucked into the shell.
-                    hero.vy += GRAVITY * 0.25 * dt;
-                    if (hero.vy > SLOW_FALL_MAX) hero.vy = SLOW_FALL_MAX;
                 } else {
                     hero.vy += GRAVITY * dt;
                 }
@@ -601,6 +618,12 @@
 
             hero.x += hero.vx * dt;
             hero.y += hero.vy * dt;
+            // A sword attack's slight lunge toward an out-of-reach foe, decaying fast.
+            if (hero.lunge) {
+                hero.x += hero.lunge * dt;
+                hero.lunge *= Math.pow(0.0005, dt);
+                if (Math.abs(hero.lunge) < 12) hero.lunge = 0;
+            }
             hero.x = Math.max(16, Math.min(hero.x, levelLength - 16));
 
             // Bonk against the cave ceiling.
@@ -1229,7 +1252,12 @@
                 const shx = s.state === "hang" ? Math.sin(performance.now() / 40) * s.shake * 3 : 0;
                 ctx.save();
                 ctx.translate(s.x + shx, s.y);
-                ctx.fillStyle = s.cracked ? "#3a3050" : "#2c2442";
+                let bodyColor = s.cracked ? "#3a3050" : "#2c2442";
+                if (s.state === "falling") {
+                    // Flash red while plummeting to warn of incoming danger.
+                    bodyColor = Math.sin(performance.now() / 60) > 0 ? "#ff3b3b" : "#7a1f1f";
+                }
+                ctx.fillStyle = bodyColor;
                 ctx.beginPath();
                 ctx.moveTo(-s.w / 2, 0);
                 ctx.lineTo(s.w / 2, 0);
@@ -1463,28 +1491,40 @@
                     ctx.arc(-2 + i * 9, -hero.h / 2 - 1, 4, 0, Math.PI * 2);
                     ctx.fill();
                 }
-                // sword in the front hand — animation differs per combo step
-                let blade = 0;       // shoulder rotation of the sword
-                if (hero.attackTime > 0 && weapon === "sword") {
-                    const prog = 1 - hero.attackTime / hero.attackDur;
-                    if (hero.attackSpin) {
-                        blade = -1.1 + prog * Math.PI * 2;          // full spin
-                    } else if (hero.comboStep === 2) {
-                        blade = 1.1 - prog * 2.0;                    // upward back-swing
+                // Weapon held in the front hand reflects the equipped gear.
+                if (weapon === "sword") {
+                    // sword in the front hand — animation differs per combo step
+                    let blade = 0;       // shoulder rotation of the sword
+                    if (hero.attackTime > 0) {
+                        const prog = 1 - hero.attackTime / hero.attackDur;
+                        if (hero.attackSpin) {
+                            blade = -1.1 + prog * Math.PI * 2;          // full spin
+                        } else if (hero.comboStep === 2) {
+                            blade = 1.1 - prog * 2.0;                    // upward back-swing
+                        } else {
+                            blade = -1.1 + prog * 2.0;                   // downward chop
+                        }
                     } else {
-                        blade = -1.1 + prog * 2.0;                   // downward chop
+                        blade = -1.1;
                     }
+                    ctx.save();
+                    ctx.translate(hero.w / 2 - 2, -10);
+                    ctx.rotate(blade);
+                    ctx.fillStyle = "#cfd8e6";
+                    roundRect(0, -3, 24, 5, 2);
+                    ctx.fillStyle = "#ffd166";
+                    roundRect(-4, -4, 5, 7, 2);
+                    ctx.restore();
                 } else {
-                    blade = -1.1;
+                    // A throwing star spins in the front hand; a tap flicks it forward.
+                    let reach = 0;
+                    if (hero.attackTime > 0) {
+                        const prog = 1 - hero.attackTime / hero.attackDur;
+                        reach = Math.sin(prog * Math.PI) * 8;
+                    }
+                    ctx.fillStyle = "#ffe08a";
+                    drawStarShape(hero.w / 2 - 2 + reach, -10, 7, time * 8);
                 }
-                ctx.save();
-                ctx.translate(hero.w / 2 - 2, -10);
-                ctx.rotate(blade);
-                ctx.fillStyle = "#cfd8e6";
-                roundRect(0, -3, 24, 5, 2);
-                ctx.fillStyle = "#ffd166";
-                roundRect(-4, -4, 5, 7, 2);
-                ctx.restore();
             }
             ctx.restore();
 
@@ -1662,7 +1702,8 @@
                 toggleWeapon();
                 return;
             }
-            pointers.set(id, { isBtn: false, sx: x, sy: y, st: performance.now(), mode: "" });
+            const t = performance.now();
+            pointers.set(id, { isBtn: false, sx: x, sy: y, st: t, mode: "", lx: x, ly: y, lt: t });
         }
 
         function pressMove(id, x, y) {
@@ -1671,15 +1712,23 @@
             const dx = x - p.sx, dy = y - p.sy;
             const adx = Math.abs(dx), ady = Math.abs(dy);
 
+            // Instantaneous finger speed since the previous sample. Measuring the
+            // recent motion (not the average since touchdown) means a quick flick
+            // is detected even when the press began with a brief pause or drift.
+            const now = performance.now();
+            const sdx = x - p.lx, sdy = y - p.ly;     // movement since the previous sample
+            const flickSpeed = (Math.hypot(sdx, sdy) / Math.max(1, now - p.lt)) * 1000;
+            p.lx = x; p.ly = y; p.lt = now;
+
             if (p.mode === "") {
                 if (Math.max(adx, ady) < MOVE_THRESH) return;
                 if (ady > adx) {
                     if (dy < -SWIPE_THRESH) {
                         if (hero.onGround) {
-                            // Lean the jump when the upward swipe is angled > 30°.
-                            const ang = Math.atan2(adx, ady);   // 0 = straight up
-                            const lean = ang > JUMP_ANGLE_MIN ? (dx < 0 ? -1 : 1) : 0;
-                            jump(lean);
+                            // Lean the jump by the swipe's horizontal share, so it
+                            // travels in whatever direction the swipe points.
+                            const len = Math.hypot(dx, dy) || 1;
+                            jump(dx / len);
                         } else if (hero.jumpsUsed < 2 && ady > adx * 2) {
                             // A clean upward swipe in the air is a double jump.
                             jump(0);
@@ -1688,21 +1737,45 @@
                         }
                         p.mode = "swiped";
                     } else if (dy > SWIPE_THRESH) {
-                        touchShell = true; shellId = id; p.mode = "shell";
+                        touchShell = true; shellId = id; p.mode = "shell"; p.anchorY = y;
                     }
                 } else {
                     const dir = dx < 0 ? -1 : 1;
                     // A fast horizontal flick dashes (on the ground or in the air).
-                    const speed = (Math.hypot(dx, dy) / Math.max(1, performance.now() - p.st)) * 1000;
-                    if (!hero.shell && (speed > GROUND_DASH_SPEED || !hero.onGround)) startDash(dir, 0);
+                    if (!hero.shell && (flickSpeed > GROUND_DASH_SPEED || !hero.onGround)) startDash(dir, 0);
                     touchMoveDir = dir; moveId = id; p.mode = "move";
+                    p.anchorY = y;       // baseline for vertical swipes while moving
                 }
             } else if (p.mode === "move") {
                 if (adx > 8) { touchMoveDir = dx < 0 ? -1 : 1; }
-                if (dy > SWIPE_THRESH * 1.4 && ady > adx) {
+                // Without lifting the finger, a vertical swipe from the current
+                // height jumps (up) or shells (down). While the finger travels
+                // mostly sideways the anchor stays glued to it, so only a
+                // deliberate vertical flick builds enough offset to trigger.
+                const vUp = p.anchorY - y, vDown = y - p.anchorY;
+                if (vUp > SWIPE_THRESH) {
+                    jump(touchMoveDir);          // a running jump leans the way you move
+                    p.anchorY = y;
+                } else if (vDown > SWIPE_THRESH * 1.4) {
                     touchShell = true; shellId = id;
                     if (moveId === id) { moveId = null; touchMoveDir = 0; }
-                    p.mode = "shell";
+                    p.mode = "shell"; p.anchorY = y;
+                } else if (Math.abs(sdy) <= Math.abs(sdx)) {
+                    // A fast horizontal flick mid-move dashes without lifting off;
+                    // startDash is cooldown-gated so this can't spam.
+                    if (!hero.shell && flickSpeed > GROUND_DASH_SPEED) startDash(sdx < 0 ? -1 : 1, 0);
+                    p.anchorY = y;       // mostly-horizontal motion keeps the baseline current
+                }
+            } else if (p.mode === "shell") {
+                // An upward swipe pops back out of the shell without lifting off,
+                // handing control back to the move/idle state.
+                const vUp = p.anchorY - y;
+                if (vUp > SWIPE_THRESH) {
+                    touchShell = false;
+                    if (shellId === id) shellId = null;
+                    p.mode = "move"; moveId = id; touchMoveDir = 0; p.anchorY = y;
+                } else if (Math.abs(sdy) <= Math.abs(sdx)) {
+                    p.anchorY = y;       // keep the baseline current during sideways drift
                 }
             }
         }
