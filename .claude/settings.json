@@ -1,0 +1,17 @@
+{
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "if": "Bash(git push*)",
+                        "command": "SW=/home/user/Simple-Games/sw.js; VER=$(grep -oP '(?<=simple-games-v)\\d+' \"$SW\"); NEW=$((VER+1)); sed -i \"s/simple-games-v${VER}/simple-games-v${NEW}/\" \"$SW\"; git -C /home/user/Simple-Games add sw.js && git -C /home/user/Simple-Games commit -m \"Bump cache version to simple-games-v${NEW}\" 2>/dev/null; echo \"{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"PreToolUse\\\",\\\"additionalContext\\\":\\\"Bumped CACHE_NAME from simple-games-v${VER} to simple-games-v${NEW} before push.\\\"}}\"",
+                        "statusMessage": "Bumping sw.js cache version..."
+                    }
+                ]
+            }
+        ]
+    }
+}
