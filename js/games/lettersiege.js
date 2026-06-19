@@ -58,6 +58,7 @@
         let puzzle;
         let rafId, lastTs;
         let speechPrimed = false;  // mobile speech unlock (set once, on first tap)
+        let speechVoice = null;
 
         // World pieces
         let buildings;
@@ -217,6 +218,14 @@
 
         function dispCase(ch, mode) { return mode === "lower" ? ch.toLowerCase() : ch.toUpperCase(); }
 
+        function refreshSpeechVoice() {
+            try {
+                if (!("speechSynthesis" in window)) return;
+                const voices = window.speechSynthesis.getVoices();
+                speechVoice = voices.find(v => /^en(-|_)/i.test(v.lang)) || voices[0] || null;
+            } catch (e) { /* speech is a nice-to-have; never break the game */ }
+        }
+
         function speak(text) {
             try {
                 if (!SGSound.isEnabled() || !("speechSynthesis" in window)) return;
@@ -224,23 +233,19 @@
                 // speech unlock, so only interrupt once speech is already primed.
                 if (speechPrimed) window.speechSynthesis.cancel();
                 speechPrimed = true;
+                if (!speechVoice) refreshSpeechVoice();
                 const u = new SpeechSynthesisUtterance(text);
+                if (speechVoice) u.voice = speechVoice;
                 u.rate = 0.9; u.pitch = 1.05; u.volume = 1;
                 window.speechSynthesis.speak(u);
             } catch (e) { /* speech is a nice-to-have; never break the game */ }
         }
 
         // Mobile browsers only allow speech that begins inside a user gesture.
-        // Fire a near-silent utterance straight from the first tap to unlock it.
+        // Load voices on the first tap, then let the real prompt speak in that same gesture.
         function primeSpeech() {
             if (speechPrimed) return;
-            try {
-                if (!SGSound.isEnabled() || !("speechSynthesis" in window)) return;
-                const u = new SpeechSynthesisUtterance(" ");
-                u.volume = 0; u.rate = 1.2;
-                window.speechSynthesis.speak(u);
-                speechPrimed = true;
-            } catch (e) { /* speech is a nice-to-have; never break the game */ }
+            refreshSpeechVoice();
         }
 
         // Read the called-out letter aloud; on a special round, name the case to find.
