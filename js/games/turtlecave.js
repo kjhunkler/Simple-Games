@@ -9,7 +9,7 @@
         const kids = !!host.kids;
 
         // ----- tuning -----
-        const MAX_HEARTS = kids ? 10 : 5;
+        const MAX_HEARTS = kids ? 5 : 3;
         const HIT_INVULN = 5;                       // seconds of mercy after a hit
         const GRAVITY = 2100;
         const MOVE_SPEED = 220;
