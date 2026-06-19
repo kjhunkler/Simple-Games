@@ -11,9 +11,7 @@
         { id: "pierce",   name: "Piercing Rounds",icon: "◈",  maxLevel: 1,
           descs: ["Bullets pierce through rocks"] },
         { id: "shield",   name: "Energy Shield",  icon: "🛡",  maxLevel: 2,
-          descs: ["3-second shield each wave", "5-second shield each wave"] },
-        { id: "boost",    name: "Engine Boost",   icon: "🚀",  maxLevel: 2,
-          descs: ["Faster ship movement", "Maximum agility"] },
+          descs: ["Permanent shield — 1 charge", "Permanent shield — 2 charges"] },
     ];
 
     // Planet archetypes drawn in the background
@@ -44,8 +42,9 @@
         let score, alive, started, elapsed;
         let phase;      // "idle" | "playing" | "wave_clear" | "shop" | "dead"
         let wave, rocksThisWave, rocksKilled, phaseTimer;
-        let shieldActive, fireEvery, shieldDur;
-        let upgrades;   // { fireRate, spread, pierce, shield, boost }
+        let fireEvery;
+        let shieldCharges, shieldMax, invuln, rechargeQueue;
+        let upgrades;   // { fireRate, spread, pierce, shield }
         let shopChoices, shopSelected;
         let lastShot, spawnTimer;
         let touchId = null, touchOffX = 0, touchOffY = 0;
@@ -54,9 +53,12 @@
         // ── Helpers ──────────────────────────────────────────────────────────
         function rocksForWave(w) { return 8 + w * 4; }
 
+        const SHIELD_RECHARGE = 30;   // seconds for one spent charge to come back
+        const INVULN_TIME     = 2;    // seconds of invulnerability after a break
+
         function applyUpgrades() {
             fireEvery = [0.22, 0.16, 0.12, 0.09][Math.min(upgrades.fireRate, 3)];
-            shieldDur  = [0, 3, 5][Math.min(upgrades.shield, 2)];
+            shieldMax = upgrades.shield;   // 1 charge per level
         }
 
         function makeVerts(r) {
@@ -164,12 +166,15 @@
             phaseTimer   = 0;
             lastShot     = 0;
             spawnTimer   = 0;
-            shieldActive = 0;
+            shieldCharges = 0;
+            shieldMax     = 0;
+            invuln        = 0;
+            rechargeQueue = [];
             shopChoices  = null;
             shopSelected = -1;
             touchId      = null;
             lastTs       = 0;
-            upgrades = { fireRate: 0, spread: 0, pierce: 0, shield: 0, boost: 0 };
+            upgrades = { fireRate: 0, spread: 0, pierce: 0, shield: 0 };
             applyUpgrades();
             buildScene();
             host.setScore(0);
@@ -182,22 +187,22 @@
             rocksKilled  = 0;
             spawnTimer   = 0.5;
             phase        = "playing";
-            if (shieldDur > 0) shieldActive = shieldDur;
         }
 
         function spawnRock() {
             const r = Math.random() * 22 + 14;
             const x = Math.random() * (W - r * 2) + r;
-            const waveBump = 1 + (wave - 1) * 0.1;
+            const waveBump = 1 + (wave - 1) * 0.14;
             const speed = ((Math.random() * 40 + 55) + Math.min(elapsed * 1.5, 90))
                           * ROCK_SPD_SCALE * waveBump;
+            const toughBonus = Math.floor((wave - 1) / 4);   // +1 HP every 4 waves
             rocks.push({
                 x, y: -r - 10, r,
-                vx: (Math.random() - 0.5) * 50,
+                vx: (Math.random() - 0.5) * (50 + (wave - 1) * 6),
                 vy: speed,
                 rot: Math.random() * Math.PI * 2,
                 vr: (Math.random() - 0.5) * 2.4,
-                hp: r > 26 ? 2 : 1,
+                hp: (r > 26 ? 2 : 1) + toughBonus,
                 verts: makeVerts(r),
                 flashT: 0
             });
@@ -225,8 +230,13 @@
 
         function applyChoice(idx) {
             if (!shopChoices || idx < 0 || idx >= shopChoices.length) return;
-            upgrades[shopChoices[idx].id] += 1;
+            const pick = shopChoices[idx];
+            upgrades[pick.id] += 1;
             applyUpgrades();
+            if (pick.id === "shield") {           // top off to new max on purchase
+                shieldCharges = shieldMax;
+                rechargeQueue = [];
+            }
             shopSelected = idx;
         }
 
@@ -338,10 +348,18 @@
             }
             if (phase === "shop" || phase === "idle" || !alive) return;
 
-            if (shieldActive > 0) shieldActive = Math.max(0, shieldActive - dt);
+            // Shield: invulnerability countdown + spent-charge recharge
+            if (invuln > 0) invuln = Math.max(0, invuln - dt);
+            for (let i = rechargeQueue.length - 1; i >= 0; i--) {
+                rechargeQueue[i] -= dt;
+                if (rechargeQueue[i] <= 0) {
+                    rechargeQueue.splice(i, 1);
+                    shieldCharges = Math.min(shieldMax, shieldCharges + 1);
+                }
+            }
 
             // Ship ease toward target
-            const ease = BASE_EASE + upgrades.boost * 4;
+            const ease = BASE_EASE;
             ship.x += (ship.tx - ship.x) * Math.min(dt * ease, 1);
             ship.y += (ship.ty - ship.y) * Math.min(dt * ease, 1);
             ship.x = Math.max(ship.r, Math.min(W - ship.r, ship.x));
@@ -370,10 +388,10 @@
             const inFlight = rocks.length;
             if (rocksKilled + inFlight < rocksThisWave) {
                 spawnTimer += dt;
-                const ramp = Math.max(SPAWN_MIN, SPAWN_BASE - elapsed * 0.007 - (wave - 1) * 0.05);
+                const ramp = Math.max(SPAWN_MIN, SPAWN_BASE - elapsed * 0.007 - (wave - 1) * 0.07);
                 if (spawnTimer >= ramp) {
                     spawnTimer = 0;
-                    const burst = Math.min(1 + Math.floor((wave - 1) / 3), rocksThisWave - rocksKilled - inFlight);
+                    const burst = Math.min(1 + Math.floor((wave - 1) / 2), rocksThisWave - rocksKilled - inFlight);
                     for (let k = 0; k < burst; k++) spawnRock();
                 }
             }
@@ -426,12 +444,22 @@
                 const ddx = ship.x - rock.x, ddy = ship.y - rock.y;
                 const rr  = rock.r * 0.82 + ship.r * 0.7;
                 if (ddx * ddx + ddy * ddy < rr * rr) {
-                    if (shieldActive > 0) {
-                        // Shield repels the rock
+                    if (invuln > 0) {
+                        // Briefly invulnerable after a break — shrug the rock off
                         const dist = Math.hypot(ddx, ddy) || 1;
-                        rock.vx -= (ddx / dist) * 220;
-                        rock.vy -= (ddy / dist) * 220;
-                        explode(rock.x - ddx / dist * rock.r, rock.y - ddy / dist * rock.r, "#39d0ff", 6, 80);
+                        rock.vx -= (ddx / dist) * 200;
+                        rock.vy -= (ddy / dist) * 200;
+                    } else if (shieldCharges > 0) {
+                        // Break a shield charge, gain brief invulnerability, queue recharge
+                        shieldCharges -= 1;
+                        invuln = INVULN_TIME;
+                        rechargeQueue.push(SHIELD_RECHARGE);
+                        const dist = Math.hypot(ddx, ddy) || 1;
+                        rock.vx -= (ddx / dist) * 240;
+                        rock.vy -= (ddy / dist) * 240;
+                        explode(ship.x, ship.y, "#39d0ff", 22, 150);
+                        host.vibrate([30, 40, 30]);
+                        SGSound.play("bounce");
                     } else {
                         alive = false;
                         phase = "dead";
@@ -640,14 +668,16 @@
                 ctx.save();
                 ctx.translate(ship.x, ship.y);
 
-                // Shield ring
-                if (shieldActive > 0) {
-                    const pulse = 0.55 + 0.35 * Math.sin(elapsed * 9);
+                // Shield ring — steady glow while charged, fast flash while invulnerable
+                if (shieldCharges > 0 || invuln > 0) {
+                    const pulse = invuln > 0
+                        ? 0.5 + 0.5 * Math.sin(elapsed * 30)
+                        : 0.4 + 0.25 * Math.sin(elapsed * 4);
                     ctx.save();
                     ctx.shadowColor = "#39d0ff";
-                    ctx.shadowBlur  = 22;
-                    ctx.strokeStyle = `rgba(57,208,255,${pulse * Math.min(shieldActive, 1)})`;
-                    ctx.lineWidth   = 3;
+                    ctx.shadowBlur  = invuln > 0 ? 26 : 16;
+                    ctx.strokeStyle = `rgba(57,208,255,${pulse})`;
+                    ctx.lineWidth   = invuln > 0 ? 3.5 : 2.5;
                     ctx.beginPath();
                     ctx.arc(0, 0, ship.r + 18, 0, Math.PI * 2);
                     ctx.stroke();
@@ -719,19 +749,26 @@
                 ctx.fillRect(bx, by, bw * Math.min(rocksKilled / rocksThisWave, 1), bh);
             }
 
-            // Shield timer
-            if (shieldActive > 0) {
+            // Shield charges — filled pips for ready, dim pips for recharging
+            const hasShield = shieldMax > 0;
+            if (hasShield) {
                 ctx.fillStyle = "#39d0ff";
                 ctx.font      = "600 12px system-ui, sans-serif";
                 ctx.textAlign = "left";
-                ctx.fillText(`🛡 ${shieldActive.toFixed(1)}s`, 12, 30);
+                ctx.fillText("🛡", 12, 30);
+                for (let i = 0; i < shieldMax; i++) {
+                    ctx.fillStyle = i < shieldCharges ? "#39d0ff" : "rgba(57,208,255,0.22)";
+                    ctx.beginPath();
+                    ctx.arc(36 + i * 13, 26, 4.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             }
 
-            // Active upgrade icons
-            const active = UPGRADE_DEFS.filter(u => upgrades[u.id] > 0);
+            // Active upgrade icons (shield shown via pips above)
+            const active = UPGRADE_DEFS.filter(u => upgrades[u.id] > 0 && u.id !== "shield");
             if (active.length > 0) {
-                let ix = shieldActive > 0 ? 12 : 12;
-                const iy = shieldActive > 0 ? 46 : 30;
+                let ix = 12;
+                const iy = hasShield ? 46 : 30;
                 ctx.font      = "12px system-ui, sans-serif";
                 ctx.textAlign = "left";
                 for (const u of active) {
