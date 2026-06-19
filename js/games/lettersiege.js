@@ -59,6 +59,7 @@
         let rafId, lastTs;
         let speechPrimed = false;  // mobile speech unlock (set once, on first tap)
         let speechVoice = null;
+        let lastSpeechText = "";
 
         // World pieces
         let buildings;
@@ -229,11 +230,13 @@
         function speak(text) {
             try {
                 if (!SGSound.isEnabled() || !("speechSynthesis" in window)) return;
+                lastSpeechText = text;
                 // Cancelling before the very first utterance can void the mobile
                 // speech unlock, so only interrupt once speech is already primed.
                 if (speechPrimed) window.speechSynthesis.cancel();
                 speechPrimed = true;
                 if (!speechVoice) refreshSpeechVoice();
+                if (window.speechSynthesis.paused) window.speechSynthesis.resume();
                 const u = new SpeechSynthesisUtterance(text);
                 if (speechVoice) u.voice = speechVoice;
                 u.rate = 0.9; u.pitch = 1.05; u.volume = 1;
@@ -246,6 +249,22 @@
         function primeSpeech() {
             if (speechPrimed) return;
             refreshSpeechVoice();
+            try {
+                if (("speechSynthesis" in window) && window.speechSynthesis.paused) {
+                    window.speechSynthesis.resume();
+                }
+            } catch (e) { /* speech is a nice-to-have; never break the game */ }
+        }
+
+        // iPhone Safari may reject speech on touchstart but allow it on touchend.
+        // Retry the most recent real prompt from that second user gesture.
+        function retrySpeechFromGesture() {
+            try {
+                if (!lastSpeechText || !SGSound.isEnabled() || !("speechSynthesis" in window)) return;
+                refreshSpeechVoice();
+                if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+                if (!window.speechSynthesis.speaking) speak(lastSpeechText);
+            } catch (e) { /* speech is a nice-to-have; never break the game */ }
         }
 
         // Read the called-out letter aloud; on a special round, name the case to find.
@@ -1746,6 +1765,7 @@
                 reset();
                 window.addEventListener("resize", resize);
                 canvas.addEventListener("touchstart", onDown, { passive: false });
+                canvas.addEventListener("touchend", retrySpeechFromGesture, { passive: false });
                 canvas.addEventListener("mousedown", onDown);
                 rafId = requestAnimationFrame(loop);
             },
@@ -1756,6 +1776,7 @@
                 cancelAnimationFrame(rafId);
                 window.removeEventListener("resize", resize);
                 canvas.removeEventListener("touchstart", onDown);
+                canvas.removeEventListener("touchend", retrySpeechFromGesture);
                 canvas.removeEventListener("mousedown", onDown);
             }
         };
