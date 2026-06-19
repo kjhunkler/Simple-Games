@@ -145,8 +145,10 @@
             }
 
             if (!target || target !== lowest || target.y + tileH < 0) {
-                // Tapped an empty/wrong lane.
-                loseLife();
+                // Tapped an empty/wrong lane. Kids mode forgives stray background
+                // taps so little fingers aren't punished for missing a tile; a
+                // tile slipping past the bottom still costs a heart.
+                if (!kids) loseLife();
                 return;
             }
 
