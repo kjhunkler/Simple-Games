@@ -413,12 +413,6 @@
                     const dx = b.x - rock.x, dy = b.y - rock.y;
                     if (dx * dx + dy * dy >= rock.r * rock.r) continue;
 
-                    if (upgrades.pierce) {
-                        b.pierced = (b.pierced || 0) + 1;
-                        if (b.pierced > 2) bullets.splice(j, 1);
-                    } else {
-                        bullets.splice(j, 1);
-                    }
                     rock.hp   -= 1;
                     rock.flashT = 1;
 
@@ -432,9 +426,17 @@
                         explode(rock.x, rock.y, "#6b6b94", 6, 80);
                         rocks.splice(i, 1);
                         destroyed = true;
+                        // Pierce through a single destroyed rock, then the bullet stops
+                        if (upgrades.pierce && !b.pierced) {
+                            b.pierced = 1;
+                        } else {
+                            bullets.splice(j, 1);
+                        }
                     } else {
+                        // Rock survived — bullet is spent even with piercing rounds
                         explode(b.x, b.y, "#9aa0c3", 5, 90);
                         SGSound.play("flip");
+                        bullets.splice(j, 1);
                     }
                     break;
                 }
