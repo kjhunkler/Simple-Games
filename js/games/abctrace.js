@@ -115,6 +115,26 @@
         } catch (e) { /* speech is a nice-to-have; never break the game */ }
     }
 
+    // Speak, then run cb once speech finishes (so the game waits for it).
+    // Falls back to a timer when speech is muted/unavailable or never ends.
+    function speakThen(text, cb) {
+        let called = false;
+        function done() { if (!called) { called = true; if (cb) cb(); } }
+        try {
+            if (!SGSound.isEnabled() || !("speechSynthesis" in window)) {
+                setTimeout(done, 650);
+                return;
+            }
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.rate = 0.85; u.pitch = 1.15; u.volume = 1;
+            u.onend = done;
+            u.onerror = done;
+            window.speechSynthesis.speak(u);
+            setTimeout(done, 1400 + text.length * 95);   // safety net
+        } catch (e) { setTimeout(done, 650); }
+    }
+
     function create(host) {
         const canvas = host.canvas;
         const ctx = canvas.getContext("2d");
@@ -123,7 +143,8 @@
 
         let W, H, headerH, boxSize, boxX, boxY;
         let letterIdx, strokes, curStroke, completed;
-        let celebrateT, sparkles, dragging, pulse, spokeFirst;
+        let celebrating, sparkles, dragging, pulse, spokeFirst;
+        let gen = 0, destroyed = false;     // generation guard for async speech callbacks
         let rafId, lastTs;
         let speakerRect = null, skipRect = null;
 
@@ -144,12 +165,13 @@
 
         function initLetter(i) {
             letterIdx = i;
+            gen++;                  // invalidate any pending speech callback
+            celebrating = false;
             const ch = ALPHABET[i];
             strokes = LETTERS[ch].map(function (pts) {
                 return { pts: pts, wps: resample(pts, 0.085), reached: 0, done: false };
             });
             curStroke = 0;
-            celebrateT = 0;
             speak(ch);
         }
 
@@ -158,7 +180,7 @@
             sparkles = [];
             dragging = false;
             pulse = 0;
-            celebrateT = 0;
+            celebrating = false;
             spokeFirst = false;
             lastTs = 0;
             host.setScore(0);
@@ -173,7 +195,7 @@
             const ch = ALPHABET[letterIdx];
             completed += 1;
             host.setScore(completed);
-            celebrateT = 1.1;
+            celebrating = true;
             SGSound.play("highscore");
             host.vibrate([15, 30, 15]);
             for (let i = 0; i < 26; i++) {
@@ -184,7 +206,13 @@
                     life: 1, color: ["#ffd166", "#ff7bd5", "#7bd0ff", "#9bff8e"][i % 4]
                 });
             }
-            speak(ch + ". " + ch + " is for " + WORDS[ch][0]);
+            // Speak "A is for Apple" (letter once), then move on when it finishes.
+            const g = gen;
+            speakThen(ch + " is for " + WORDS[ch][0], function () {
+                if (destroyed || g !== gen) return;
+                celebrating = false;
+                advance();
+            });
         }
 
         function advance() {
@@ -196,7 +224,7 @@
         }
 
         function traceAt(px, py) {
-            if (celebrateT > 0) return;
+            if (celebrating) return;
             const nx = (px - boxX) / boxSize, ny = (py - boxY) / boxSize;
             const s = strokes[curStroke];
             if (!s) return;
@@ -312,7 +340,7 @@
 
             // Start dot + arrow on the current stroke's next checkpoint
             const cs = strokes[curStroke];
-            if (cs && celebrateT <= 0) {
+            if (cs && !celebrating) {
                 const w = cs.wps[cs.reached] || cs.wps[cs.wps.length - 1];
                 const wx = SX(w.x), wy = SY(w.y);
                 const r = track * (0.7 + 0.18 * Math.sin(pulse * 4));
@@ -352,7 +380,7 @@
             }
             ctx.globalAlpha = 1;
 
-            if (celebrateT > 0) {
+            if (celebrating) {
                 ctx.fillStyle = "#2a7d4a";
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
@@ -366,10 +394,8 @@
 
         function update(dt) {
             pulse += dt;
-            if (celebrateT > 0) {
-                celebrateT -= dt;
-                if (celebrateT <= 0) advance();
-            }
+            // Advancing to the next letter is driven by speech end (see
+            // letterComplete), so update() only animates here.
             for (let i = sparkles.length - 1; i >= 0; i--) {
                 const p = sparkles[i];
                 p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt;
@@ -403,8 +429,10 @@
             // Unlock speech on the first gesture if the auto-announce was blocked.
             if (!spokeFirst) { spokeFirst = true; speak(ALPHABET[letterIdx]); }
             if (hit(speakerRect, p)) {
-                const ch = ALPHABET[letterIdx];
-                speak(ch + ". " + ch + " is for " + WORDS[ch][0]);
+                if (!celebrating) {
+                    const ch = ALPHABET[letterIdx];
+                    speak(ch + " is for " + WORDS[ch][0]);
+                }
                 return;
             }
             if (hit(skipRect, p)) {
@@ -441,6 +469,7 @@
                 reset();
             },
             destroy() {
+                destroyed = true;
                 cancelAnimationFrame(rafId);
                 try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
                 window.removeEventListener("resize", resize);
