@@ -60,6 +60,7 @@
         let speechPrimed = false;  // mobile speech unlock (set once, on first tap)
         let speechVoice = null;
         let lastSpeechText = "";
+        let waitingForSpeech = false;
 
         // World pieces
         let buildings;
@@ -146,6 +147,7 @@
             targetIdx = -1; lastTapped = -1; answeredRight = false;
             roundTime = 6; timer = 6; charge = 0; warned = false;
             puzzle = null;
+            waitingForSpeech = false;
             embers = []; smoke = []; bolts = [];
             lightTimer = 2 + Math.random() * 3;
             flash = 0; ambient = 0;
@@ -164,7 +166,7 @@
         /* ---------- round flow ---------- */
         function roundTimeForScore() {
             return kids
-                ? Math.max(5, 8 - score * 0.1)
+                ? 8
                 : Math.max(3.2, 6 - score * 0.12);
         }
 
@@ -207,7 +209,7 @@
             }
 
             // Special attacks grant extra thinking time and a longer wind-up.
-            roundTime = roundTimeForScore() + (special ? (kids ? 5 : 4) : 0);
+            roundTime = special && kids ? 15 : roundTimeForScore() + (special ? 4 : 0);
             timer = roundTime;
             charge = 0;
             warned = false;
@@ -267,15 +269,54 @@
             } catch (e) { /* speech is a nice-to-have; never break the game */ }
         }
 
+        function afterSpeech(cb, delay) {
+            const wait = delay === undefined ? 1.5 : delay;
+            let tries = 0;
+            function done() { setTimeout(cb, wait * 1000); }
+            try {
+                if (!SGSound.isEnabled() || !("speechSynthesis" in window)) { done(); return; }
+                if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+                function check() {
+                    if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) { done(); return; }
+                    tries += 1;
+                    if (tries > 120) { done(); return; }
+                    setTimeout(check, 100);
+                }
+                check();
+            } catch (e) { done(); }
+        }
+
+        function speakThen(text, cb, delay) {
+            let called = false;
+            function finish() {
+                if (called) return;
+                called = true;
+                setTimeout(cb, (delay === undefined ? 1.5 : delay) * 1000);
+            }
+            try {
+                if (!SGSound.isEnabled() || !("speechSynthesis" in window)) { finish(); return; }
+                lastSpeechText = text;
+                if (speechPrimed) window.speechSynthesis.cancel();
+                speechPrimed = true;
+                if (!speechVoice) refreshSpeechVoice();
+                if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+                const u = new SpeechSynthesisUtterance(text);
+                if (speechVoice) u.voice = speechVoice;
+                u.rate = 0.9; u.pitch = 1.05; u.volume = 1;
+                u.onend = finish;
+                u.onerror = finish;
+                window.speechSynthesis.speak(u);
+                setTimeout(finish, 1600 + text.length * 110);
+            } catch (e) { finish(); }
+        }
+
         // Read the called-out letter aloud; on a special round, name the case to find.
         function announceTarget() {
             if (special) {
-                const want = (choiceCase === "lower")
-                    ? (kids ? "little" : "lowercase")
-                    : (kids ? "big" : "uppercase");
-                speak("Find the " + want + " " + target);
+                const want = choiceCase === "lower" ? "lower-case" : "upper-case";
+                speak("Find the " + want + " " + target.toLowerCase());
             } else {
-                speak(target);
+                speak("the letter " + target.toLowerCase());
             }
         }
 
@@ -308,6 +349,8 @@
             SGSound.play(combo > 1 && combo % 5 === 0 ? "perfect" : "score");
             // Diverting the special electric attack earns a commander cheer.
             if (special) commander(pick(COMMENDS));
+            waitingForSpeech = true;
+            afterSpeech(() => { phaseT = 0; waitingForSpeech = false; }, 1.5);
         }
 
         function robotAttacks(tappedIdx) {
@@ -325,6 +368,8 @@
             host.vibrate([60, 40, 90]);
             SGSound.play("wrong");
             SGSound.play(special ? "bosszap" : "bossslam");
+            waitingForSpeech = true;
+            afterSpeech(() => { phaseT = 0; waitingForSpeech = false; }, 1.5);
         }
 
         function damageNearestBuilding(px) {
@@ -594,7 +639,9 @@
                 repairBuildings(lives >= MAX_LIVES ? buildings.length : 1);
                 host.vibrate([10, 30, 10]);
                 SGSound.play("highscore");
-                speak(lastChance ? "Saved! " + puzzle.choices[idx] : puzzle.choices[idx]);
+                speakThen(lastChance ? "Saved! " + puzzle.choices[idx] : puzzle.choices[idx], () => {
+                    if (mode === "command") newRound();
+                }, 1.5);
                 lastChance = false;
             } else {
                 shake(0.25, 8);
@@ -613,7 +660,7 @@
                 return;
             }
             // Brief pause so the player sees the result, then back to the siege.
-            setTimeout(() => { if (mode === "command") newRound(); }, correct ? 900 : 700);
+            if (!correct) setTimeout(() => { if (mode === "command") newRound(); }, 700);
         }
 
         /* ---------- atmosphere & fx ---------- */
@@ -735,6 +782,8 @@
                 charge = Math.max(0, Math.min(1, 1 - timer / roundTime));
                 if (!warned && charge > 0.68) { warned = true; SGSound.play("bosscharge"); }
                 if (timer <= 0) robotAttacks(undefined);
+            } else if (waitingForSpeech) {
+                return;
             } else if (phase === "win") {
                 phaseT -= dt;
                 if (phaseT <= 0) resolveWin();
@@ -1217,23 +1266,32 @@
                 // robot unleashes a jagged electric bolt down into the city
                 const x = beam.x;
                 const sx = rcx + sway + 104 * s, sy = rcy + 110 * s;
-                const segs = 7;
-                ctx.strokeStyle = "rgba(150,210,255," + a + ")";
-                ctx.lineWidth = (7 + 9 * a) * s;
-                ctx.shadowColor = "rgba(120,200,255,0.9)"; ctx.shadowBlur = 16 * s;
-                ctx.beginPath();
-                ctx.moveTo(sx, sy);
-                for (let i = 1; i < segs; i++) {
-                    const f = i / segs;
-                    const jx = sx + (x - sx) * f + (Math.random() - 0.5) * 26 * s;
-                    const jy = sy + (groundY - 10 - sy) * f + (Math.random() - 0.5) * 14 * s;
-                    ctx.lineTo(jx, jy);
+                const segs = 9;
+                const bolts = kids ? 4 : 2;
+                ctx.shadowColor = "rgba(120,200,255,0.95)"; ctx.shadowBlur = (kids ? 28 : 16) * s;
+                for (let b = 0; b < bolts; b++) {
+                    const ba = a * (b === 0 ? 1 : 0.55);
+                    ctx.strokeStyle = b % 2 === 0 ? "rgba(150,210,255," + ba + ")" : "rgba(255,255,120," + ba + ")";
+                    ctx.lineWidth = (kids ? 9 + 13 * ba : 7 + 9 * ba) * s;
+                    ctx.beginPath();
+                    ctx.moveTo(sx, sy);
+                    for (let i = 1; i < segs; i++) {
+                        const f = i / segs;
+                        const jx = sx + (x - sx) * f + (Math.random() - 0.5) * (kids ? 46 : 26) * s;
+                        const jy = sy + (groundY - 10 - sy) * f + (Math.random() - 0.5) * (kids ? 26 : 14) * s;
+                        ctx.lineTo(jx, jy);
+                    }
+                    ctx.lineTo(x + (Math.random() - 0.5) * (kids ? 36 : 0) * s, groundY - 10);
+                    ctx.stroke();
                 }
-                ctx.lineTo(x, groundY - 10);
-                ctx.stroke();
                 ctx.shadowBlur = 0;
+                ctx.fillStyle = "rgba(255,255,255," + (0.45 * a) + ")";
+                ctx.fillRect(-40, -40, W + 80, H + 80);
                 ctx.fillStyle = "rgba(190,230,255," + a + ")";
-                ctx.beginPath(); ctx.arc(x, groundY - 10, (16 + 24 * a) * s, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(x, groundY - 10, (kids ? 24 + 46 * a : 16 + 24 * a) * s, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = "rgba(255,255,120," + (0.9 * a) + ")";
+                ctx.lineWidth = 3 * s;
+                ctx.beginPath(); ctx.arc(x, groundY - 10, (kids ? 38 + 78 * (1 - a) : 24 + 34 * (1 - a)) * s, 0, Math.PI * 2); ctx.stroke();
             } else {
                 // robot cannon smashes down into the city
                 const x = beam.x;
@@ -1264,6 +1322,7 @@
             const apexY = cy - ry;
             const t = lastTs / 1000;
             const hue = ff.special ? "150,210,255" : "120,230,255";
+            const flashBoost = ff.special && kids ? 1.7 : 1;
 
             ctx.save();
             ctx.globalCompositeOperation = "lighter";
@@ -1271,8 +1330,8 @@
             // Faint translucent body so the city stays clearly visible through it.
             const g = ctx.createRadialGradient(cx, cy, ry * 0.2, cx, cy, ry);
             g.addColorStop(0, "rgba(" + hue + ",0)");
-            g.addColorStop(0.78, "rgba(" + hue + "," + (0.06 * a) + ")");
-            g.addColorStop(1, "rgba(" + hue + "," + (0.20 * a) + ")");
+            g.addColorStop(0.78, "rgba(" + hue + "," + (0.06 * a * flashBoost) + ")");
+            g.addColorStop(1, "rgba(" + hue + "," + (0.20 * a * flashBoost) + ")");
             ctx.fillStyle = g;
             ctx.beginPath();
             ctx.ellipse(cx, cy, rx, ry, 0, Math.PI, Math.PI * 2);
@@ -1281,8 +1340,8 @@
 
             // Bright energy rim with a gentle shimmer.
             const rimA = a * (0.8 + 0.2 * Math.sin(t * 10));
-            ctx.lineWidth = (2.5 + 1.5 * a) * s;
-            ctx.strokeStyle = "rgba(" + hue + "," + (0.6 * rimA) + ")";
+            ctx.lineWidth = (2.5 + 1.5 * a * flashBoost) * s;
+            ctx.strokeStyle = "rgba(" + hue + "," + (0.6 * rimA * flashBoost) + ")";
             ctx.beginPath();
             ctx.ellipse(cx, cy, rx, ry, 0, Math.PI, Math.PI * 2);
             ctx.stroke();
@@ -1292,7 +1351,7 @@
             for (let k = 1; k <= 3; k++) {
                 const h = ry * (k / 4);
                 const rw = rx * Math.sqrt(Math.max(0, 1 - (h / ry) * (h / ry)));
-                ctx.strokeStyle = "rgba(" + hue + "," + (0.12 * a) + ")";
+                ctx.strokeStyle = "rgba(" + hue + "," + (0.12 * a * flashBoost) + ")";
                 ctx.beginPath();
                 ctx.ellipse(cx, cy - h, rw, rw * 0.12, 0, 0, Math.PI * 2);
                 ctx.stroke();
@@ -1301,14 +1360,14 @@
             // Impact: the boss's strike glances off the apex in a burst of light.
             const impact = Math.max(0, 1 - ff.t / 0.45);
             if (impact > 0) {
-                ctx.strokeStyle = "rgba(255,255,255," + (0.5 * impact) + ")";
-                ctx.lineWidth = (3 + 4 * impact) * s;
+                ctx.strokeStyle = "rgba(255,255,255," + (0.5 * impact * flashBoost) + ")";
+                ctx.lineWidth = (3 + 4 * impact * flashBoost) * s;
                 ctx.beginPath();
                 ctx.moveTo(rcx + sway, rcy + 80 * s);
                 ctx.lineTo(cx, apexY);
                 ctx.stroke();
 
-                const fr = (12 + 60 * (1 - impact)) * s;
+                const fr = (12 + 60 * flashBoost * (1 - impact)) * s;
                 const ig = ctx.createRadialGradient(cx, apexY, 0, cx, apexY, fr);
                 ig.addColorStop(0, "rgba(255,255,255," + (0.9 * impact) + ")");
                 ig.addColorStop(0.4, "rgba(" + hue + "," + (0.7 * impact) + ")");
@@ -1316,16 +1375,16 @@
                 ctx.fillStyle = ig;
                 ctx.beginPath(); ctx.arc(cx, apexY, fr, 0, Math.PI * 2); ctx.fill();
 
-                const rr = (10 + 120 * (1 - impact)) * s;
-                ctx.strokeStyle = "rgba(255,255,255," + (0.6 * impact) + ")";
-                ctx.lineWidth = 3 * s * impact;
+                const rr = (10 + 120 * flashBoost * (1 - impact)) * s;
+                ctx.strokeStyle = "rgba(255,255,255," + (0.6 * impact * flashBoost) + ")";
+                ctx.lineWidth = 3 * s * impact * flashBoost;
                 ctx.beginPath(); ctx.arc(cx, apexY, rr, 0, Math.PI * 2); ctx.stroke();
             }
 
             // Ricochet sparks scatter off the top as the blow is turned aside.
             const spark = Math.max(0, 1 - ff.t / 0.55);
             if (spark > 0) {
-                const n = 9;
+                const n = ff.special && kids ? 18 : 9;
                 for (let i = 0; i < n; i++) {
                     const ang = -Math.PI / 2 + (i / (n - 1) - 0.5) * 2.4 + Math.sin(i * 3.1) * 0.12;
                     const dist = (18 + ff.t * 520) * s;
@@ -1398,6 +1457,23 @@
             }
         }
 
+        function drawCenteredIconText(icon, text, cx, y, iconFont, textFont, gap) {
+            gap = gap === undefined ? 5 : gap;
+            ctx.save();
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.font = iconFont;
+            const iw = ctx.measureText(icon).width;
+            ctx.font = textFont;
+            const tw = ctx.measureText(text).width;
+            const x = cx - (iw + gap + tw) / 2;
+            ctx.font = iconFont;
+            ctx.fillText(icon, x, y);
+            ctx.font = textFont;
+            ctx.fillText(text, x + iw + gap, y);
+            ctx.restore();
+        }
+
         function layoutSiege() {
             const panelTop = H * 0.71;
             const n = choices.length;
@@ -1445,12 +1521,12 @@
                     ? (kids ? "little" : "lowercase")
                     : (kids ? "BIG" : "UPPERCASE");
                 ctx.fillStyle = "#8ad6ff";
-                ctx.font = "800 16px system-ui, sans-serif";
-                ctx.fillText("\u26A1 SPECIAL: TAP THE " + want + " LETTER \u26A1", W / 2, lay.panelTop + 36);
+                const f = W < 360 ? "800 14px system-ui, sans-serif" : "800 16px system-ui, sans-serif";
+                drawCenteredIconText("\u26A1", "SPECIAL: TAP THE " + want + " LETTER", W / 2, lay.panelTop + 32, f, f, 6);
             } else {
                 ctx.fillStyle = charge > 0.66 ? "#ff8a92" : "rgba(242,243,255,0.92)";
-                ctx.font = "800 16px system-ui, sans-serif";
-                ctx.fillText("\u26A0\uFE0F  TAP THE LETTER  \u26A0\uFE0F", W / 2, lay.panelTop + 36);
+                const f = W < 360 ? "800 14px system-ui, sans-serif" : "800 16px system-ui, sans-serif";
+                drawCenteredIconText("\u26A0\uFE0F", "TAP THE LETTER", W / 2, lay.panelTop + 32, f, f, 7);
             }
 
             // big target letter, top-centre over the action
@@ -1484,10 +1560,11 @@
                 ctx.fillText(dispCase(r.ch, choiceCase), r.x + r.w / 2, r.y + r.h / 2 + 1);
             }
 
-            // command center button (top-right)
+            // command center button
             const avail = commandAvailable();
-            const cbw = 132, cbh = 34;
-            ccBtn = { x: W - cbw - 10, y: 12, w: cbw, h: cbh, avail: avail };
+            const compact = W < 380;
+            const cbw = compact ? Math.min(156, W - 24) : 132, cbh = 34;
+            ccBtn = { x: compact ? (W - cbw) / 2 : W - cbw - 10, y: compact ? 88 : 12, w: cbw, h: cbh, avail: avail };
             ctx.globalAlpha = avail ? 1 : 0.4;
             const cg = ctx.createLinearGradient(0, ccBtn.y, 0, ccBtn.y + cbh);
             cg.addColorStop(0, "#3a2f6a"); cg.addColorStop(1, "#241c46");
@@ -1498,10 +1575,10 @@
             ctx.fillStyle = "#fff";
             ctx.font = "700 13px system-ui, sans-serif";
             ctx.textAlign = "center"; ctx.textBaseline = "middle";
-            const label = lives >= MAX_LIVES ? "\u{1F6E1}\uFE0F Hearts full"
-                : avail ? "\u{1F6E1}\uFE0F Command Center"
-                    : "\u{1F6E1}\uFE0F Recharge " + ccCooldown;
-            ctx.fillText(label, ccBtn.x + cbw / 2, ccBtn.y + cbh / 2 + 1);
+            const label = lives >= MAX_LIVES ? "Hearts full"
+                : avail ? "Command Center"
+                    : "Recharge " + ccCooldown;
+            drawCenteredIconText("\u{1F6E1}\uFE0F", label, ccBtn.x + cbw / 2, ccBtn.y + cbh / 2 + 1, "700 13px system-ui, sans-serif", "700 13px system-ui, sans-serif", 4);
             ctx.globalAlpha = 1;
 
             // score
@@ -1524,8 +1601,8 @@
 
             ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
             ctx.fillStyle = "#ffd166";
-            ctx.font = "800 17px system-ui, sans-serif";
-            ctx.fillText("\u{1F6E1}\uFE0F COMMAND CENTER", x + cw / 2, y + 30);
+            const titleFont = W < 360 ? "800 15px system-ui, sans-serif" : "800 17px system-ui, sans-serif";
+            drawCenteredIconText("\u{1F6E1}\uFE0F", "COMMAND CENTER", x + cw / 2, y + 30, titleFont, titleFont, 6);
             if (lastChance) {
                 ctx.fillStyle = "#ff8a92";
                 ctx.font = "800 13px system-ui, sans-serif";
