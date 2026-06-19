@@ -14,6 +14,22 @@
     const SERVER_HOST = "192.168.0.12";
     const SERVER_PORT = 8765;
 
+    // Solo (offline) mode mirrors the Python server's gameplay constants and bug
+    // species so a lone player gets the same round when no server is reachable.
+    const SOLO_SPECIES = [
+        ["ladybug", "\u{1F41E}"], ["ant", "\u{1F41C}"], ["honeybee", "\u{1F41D}"],
+        ["butterfly", "\u{1F98B}"], ["caterpillar", "\u{1F41B}"], ["snail", "\u{1F40C}"],
+        ["spider", "\u{1F577}\uFE0F"], ["scorpion", "\u{1F982}"]
+    ];
+    const SOLO_SPOT_TYPES = ["log", "tree", "grass"];
+    const SOLO_CFG = {
+        PLAY_TOP: HORIZON + 14,
+        SEARCH_RADIUS: 58, CAPTURE_RADIUS: 78, CAPTURE_TIME: 3.0,
+        PROGRESS_DECAY: 1.6, FLEE_TRIGGER: 165, FLEE_SPEED: 95,
+        WANDER_SPEED: 28, CORNERED_FACTOR: 0.32,
+        TARGETS: 4, EXTRA_BUGS: 4, RESET_SECONDS: 10.0
+    };
+
     const CSS = `
     .bh-hud{position:absolute;inset:0;pointer-events:none;font-family:system-ui,sans-serif;
         color:#f2f3ff;-webkit-user-select:none;user-select:none;touch-action:none;}
@@ -117,6 +133,8 @@
         const joy = { active: false, dx: 0, dy: 0, pid: null }; // analog -1..1
         let lastMoveSent = 0, rafId = null, lastTs = 0;
         let promptOpen = false;
+        let solo = false, soloSim = null, soloAccum = 0;
+        const SOLO_TICK = 1 / 20;   // advance the offline sim at the server's tick rate
 
         // Decorative scenery, generated once so it stays put frame to frame.
         const tufts = [];
@@ -172,6 +190,7 @@
             elStick.addEventListener("pointerleave", stickEnd);
 
             elReady.addEventListener("click", () => {
+                if (solo) { soloNewRound(); refreshSoloState(); SGSound.play("tap"); return; }
                 const meP = myPlayer();
                 send({ type: "ready", value: !(meP && meP.ready) });
                 SGSound.play("tap");
@@ -230,6 +249,7 @@
                 '  <span class="field-label">Server</span>' +
                 '  <input class="bh-server" type="text" autocomplete="off" />' +
                 '  <button class="bh-btn bh-join">Join as ' + myName + "</button>" +
+                '  <button class="bh-btn alt bh-solo">Play solo (offline)</button>' +
                 '</div>';
             const input = elCenter.querySelector(".bh-server");
             input.value = defaultWsUrl();
@@ -237,6 +257,11 @@
                 SGSound.unlock();
                 SGSound.play("tap");
                 connect(input.value.trim() || defaultWsUrl());
+            });
+            elCenter.querySelector(".bh-solo").addEventListener("click", () => {
+                SGSound.unlock();
+                SGSound.play("tap");
+                startSolo();
             });
         }
 
@@ -259,9 +284,15 @@
                 '<div class="bh-card">' +
                 '  <h2>' + title + "</h2>" +
                 '  <div class="bh-errbody">' + htmlBody + "</div>" +
-                '  <button class="bh-btn bh-retry">Try again</button>' +
+                '  <button class="bh-btn bh-solo">Play solo (offline)</button>' +
+                '  <button class="bh-btn alt bh-retry">Try again</button>' +
                 "</div>";
             elCenter.querySelector(".bh-retry").addEventListener("click", showJoin);
+            elCenter.querySelector(".bh-solo").addEventListener("click", () => {
+                SGSound.unlock();
+                SGSound.play("tap");
+                startSolo();
+            });
         }
 
         // ---- networking -------------------------------------------------- //
@@ -415,6 +446,230 @@
             return (state.players || []).find((p) => p.id === myId) || null;
         }
 
+        // ---- solo mode (offline, no server) ------------------------------ //
+        // Mirrors the Python server's bug AI and capture rules closely enough
+        // that one player gets the same round when nobody can host. Each tick we
+        // rebuild a server-shaped state object and feed it through applyState so
+        // the HUD/renderer behave exactly as they do online.
+        function soloEmoji(species) {
+            const f = SOLO_SPECIES.find((s) => s[0] === species);
+            return f ? f[1] : "\u{1F41B}";
+        }
+        function soloShuffle(arr) {
+            const a = arr.slice();
+            for (let i = a.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const t = a[i]; a[i] = a[j]; a[j] = t;
+            }
+            return a;
+        }
+        function soloRandomPos(margin) {
+            margin = margin || 70;
+            return {
+                x: margin + Math.random() * (world.w - margin * 2),
+                y: SOLO_CFG.PLAY_TOP + margin +
+                    Math.random() * (world.h - SOLO_CFG.PLAY_TOP - margin * 2)
+            };
+        }
+        function soloSpacedPos(others, minDist) {
+            minDist = minDist || 90;
+            for (let i = 0; i < 40; i++) {
+                const p = soloRandomPos();
+                if (others.every((o) => (p.x - o.x) * (p.x - o.x) +
+                    (p.y - o.y) * (p.y - o.y) >= minDist * minDist)) return p;
+            }
+            return soloRandomPos();
+        }
+        function soloNextBugId() { return "b" + (++soloSim.bugSeq); }
+        function soloSpawnHidden(species) {
+            const pos = soloSpacedPos(soloSim.spots, 85);
+            const spot = {
+                id: "s" + soloSim.spots.length,
+                type: SOLO_SPOT_TYPES[Math.floor(Math.random() * SOLO_SPOT_TYPES.length)],
+                x: pos.x, y: pos.y, rustle: 0
+            };
+            soloSim.spots.push(spot);
+            soloSim.bugs.push({
+                id: soloNextBugId(), species: species, emoji: soloEmoji(species),
+                state: "hidden", x: pos.x, y: pos.y, spot: spot.id,
+                heading: Math.random() * Math.PI * 2, prog: 0, cap: null
+            });
+        }
+        function soloSpawnFleeing(species, x, y) {
+            soloSim.bugs.push({
+                id: soloNextBugId(), species: species, emoji: soloEmoji(species),
+                state: "fleeing",
+                x: Math.max(20, Math.min(world.w - 20, x)),
+                y: Math.max(SOLO_CFG.PLAY_TOP + 4, Math.min(world.h - 20, y)),
+                spot: null, heading: Math.random() * Math.PI * 2, prog: 0, cap: null
+            });
+        }
+        function soloHeld() {
+            return soloSim.inventory
+                .filter((it) => soloSim.targets.indexOf(it.species) >= 0)
+                .map((it) => it.species);
+        }
+        function soloTargetsMet() {
+            const held = soloHeld();
+            return held.length === soloSim.targets.length &&
+                held.every((s, i) => s === soloSim.targets[i]);
+        }
+        function soloProgress() {
+            if (soloTargetsMet()) return soloSim.targets.length;
+            const held = soloHeld();
+            let k = 0;
+            for (const t of soloSim.targets) {
+                if (k < held.length && held[k] === t) k++; else break;
+            }
+            return k;
+        }
+        function soloNewRound() {
+            world = { w: 1000, h: 700 };
+            soloSim.phase = "playing";
+            soloSim.resetTimer = 0;
+            soloSim.bugs = [];
+            soloSim.spots = [];
+            soloSim.bugSeq = 0;
+            soloSim.inventory = [];
+            const keys = SOLO_SPECIES.map((s) => s[0]);
+            soloSim.targets = soloShuffle(keys).slice(0, SOLO_CFG.TARGETS);
+            for (const sp of soloSim.targets) soloSpawnHidden(sp);
+            for (let i = 0; i < SOLO_CFG.EXTRA_BUGS; i++) {
+                soloSpawnHidden(keys[Math.floor(Math.random() * keys.length)]);
+            }
+            for (let i = 0; i < 4; i++) {
+                const pos = soloSpacedPos(soloSim.spots, 85);
+                soloSim.spots.push({
+                    id: "s" + soloSim.spots.length,
+                    type: SOLO_SPOT_TYPES[Math.floor(Math.random() * SOLO_SPOT_TYPES.length)],
+                    x: pos.x, y: pos.y, rustle: 0
+                });
+            }
+            const pp = soloRandomPos();
+            me.x = pp.x; me.y = pp.y; havePos = true;
+            prevInvCount = 0;
+            lastWinner = null;
+        }
+        function soloRelease(bugId, x, y) {
+            const i = soloSim.inventory.findIndex((it) => it.bugId === bugId);
+            if (i < 0) return;
+            const it = soloSim.inventory[i];
+            soloSim.inventory.splice(i, 1);
+            soloSpawnFleeing(it.species, x, y);
+            refreshSoloState();
+        }
+        function soloCapture(bug) {
+            bug.state = "captured";
+            soloSim.inventory.push({ bugId: bug.id, species: bug.species, emoji: bug.emoji });
+            // applyState plays the catch sound when the bag count grows.
+            if (soloSim.phase === "playing" && soloTargetsMet()) {
+                soloSim.phase = "won";
+                soloSim.resetTimer = SOLO_CFG.RESET_SECONDS;
+            }
+        }
+        function refreshSoloState() {
+            applyState({
+                phase: soloSim.phase,
+                resetTimer: Math.max(0, soloSim.resetTimer),
+                winnerName: soloSim.phase === "won" ? myName : "",
+                world: { w: world.w, h: world.h },
+                captureTime: SOLO_CFG.CAPTURE_TIME,
+                players: [{
+                    id: myId, name: myName, avatar: myAvatar,
+                    x: me.x, y: me.y, ready: false, won: soloSim.phase === "won"
+                }],
+                spots: soloSim.spots.map((s) => ({
+                    id: s.id, type: s.type, x: s.x, y: s.y, rustle: s.rustle
+                })),
+                bugs: soloSim.bugs.filter((b) => b.state === "fleeing").map((b) => ({
+                    id: b.id, emoji: b.emoji, x: b.x, y: b.y, cap: b.cap || null
+                })),
+                you: {
+                    id: myId, ready: false,
+                    targets: soloSim.targets.map((s) => ({ species: s, emoji: soloEmoji(s) })),
+                    progress: soloProgress(),
+                    inventory: soloSim.inventory.map((it) => ({
+                        bugId: it.bugId, species: it.species, emoji: it.emoji,
+                        isTarget: soloSim.targets.indexOf(it.species) >= 0
+                    }))
+                }
+            });
+        }
+        function startSolo() {
+            solo = true;
+            connected = true;          // lets step() run local player movement
+            myId = "solo";
+            soloAccum = 0;
+            soloSim = {
+                phase: "playing", resetTimer: 0, bugs: [], spots: [],
+                bugSeq: 0, targets: [], inventory: []
+            };
+            soloNewRound();
+            clearCenter();
+            setControls(true);
+            if (elStatus) elStatus.textContent = "solo";
+            refreshSoloState();
+        }
+        function soloTick(dt) {
+            if (!soloSim) return;
+            soloAccum += dt;
+            if (soloAccum < SOLO_TICK) return;
+            const sdt = soloAccum;
+            soloAccum = 0;
+
+            if (soloSim.phase === "won") {
+                soloSim.resetTimer -= sdt;
+                if (soloSim.resetTimer <= 0) soloNewRound();
+                refreshSoloState();
+                return;
+            }
+
+            for (const s of soloSim.spots) s.rustle = Math.max(0, s.rustle - sdt);
+
+            const cfg = SOLO_CFG;
+            for (const bug of soloSim.bugs) {
+                if (bug.state === "captured") continue;
+                const dx = me.x - bug.x, dy = me.y - bug.y;
+                const d2 = dx * dx + dy * dy;
+
+                if (bug.state === "hidden") {
+                    if (d2 <= cfg.SEARCH_RADIUS * cfg.SEARCH_RADIUS) {
+                        bug.state = "fleeing";
+                        const spot = soloSim.spots.find((s) => s.id === bug.spot);
+                        if (spot) spot.rustle = 0.5;
+                    }
+                    continue;
+                }
+
+                let beingCaptured = false;
+                if (d2 <= cfg.CAPTURE_RADIUS * cfg.CAPTURE_RADIUS) {
+                    bug.prog += sdt; beingCaptured = true;
+                } else if (bug.prog > 0) {
+                    bug.prog = Math.max(0, bug.prog - cfg.PROGRESS_DECAY * sdt);
+                }
+                if (bug.prog >= cfg.CAPTURE_TIME) { soloCapture(bug); continue; }
+                bug.cap = bug.prog > 0
+                    ? { by: myId, p: Math.min(1, bug.prog / cfg.CAPTURE_TIME) } : null;
+
+                let speed = cfg.WANDER_SPEED;
+                if (d2 < cfg.FLEE_TRIGGER * cfg.FLEE_TRIGGER) {
+                    bug.heading = Math.atan2(bug.y - me.y, bug.x - me.x);
+                    speed = cfg.FLEE_SPEED;
+                } else {
+                    bug.heading += (Math.random() * 3 - 1.5) * sdt;
+                }
+                if (beingCaptured) speed *= cfg.CORNERED_FACTOR;
+                bug.x += Math.cos(bug.heading) * speed * sdt;
+                bug.y += Math.sin(bug.heading) * speed * sdt;
+                if (bug.x < 18 || bug.x > world.w - 18) bug.heading = Math.PI - bug.heading;
+                if (bug.y < cfg.PLAY_TOP + 4 || bug.y > world.h - 18) bug.heading = -bug.heading;
+                bug.x = Math.max(18, Math.min(world.w - 18, bug.x));
+                bug.y = Math.max(cfg.PLAY_TOP + 4, Math.min(world.h - 18, bug.y));
+            }
+            soloSim.bugs = soloSim.bugs.filter((b) => b.state !== "captured");
+            refreshSoloState();
+        }
+
         // ---- HUD rendering ----------------------------------------------- //
         function renderHud() {
             if (!state) return;
@@ -488,7 +743,8 @@
                 '  </div>' +
                 "</div>";
             elCenter.querySelector(".bh-rel").addEventListener("click", () => {
-                send({ type: "release", bugId: item.bugId, x: me.x, y: me.y });
+                if (solo) soloRelease(item.bugId, me.x, me.y);
+                else send({ type: "release", bugId: item.bugId, x: me.x, y: me.y });
                 SGSound.play("drop");
                 host.vibrate(15);
                 closePrompt();
@@ -687,19 +943,17 @@
             drawShadow(x, y + r * 0.7, r * 0.7, r * 0.28);
             ctx.save();
             ctx.translate(x, y + bob);
-            // A soft pale halo keeps bugs readable on the dark grass, and means
-            // they're visible even if a device can't render the colour emoji.
-            ctx.beginPath();
-            ctx.arc(0, 0, r, 0, Math.PI * 2);
-            ctx.fillStyle = "rgba(255,255,255,0.82)";
-            ctx.fill();
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.font = Math.max(24, 30 * scale) + "px system-ui, sans-serif";
-            // Set an explicit dark fill so any monochrome-fallback glyph reads as
-            // a clear silhouette on the halo (instead of a near-invisible shadow).
-            ctx.fillStyle = "#15311f";
+            // No halo behind the bug: a soft drop shadow lifts it off the grass
+            // for readability, and the light fill keeps any monochrome-fallback
+            // glyph visible on the dark field.
+            ctx.shadowColor = "rgba(0,0,0,0.5)";
+            ctx.shadowBlur = 5;
+            ctx.fillStyle = "#eafff1";
             ctx.fillText(b.emoji, 0, 0);
+            ctx.shadowBlur = 0;
             if (b.cap && b.cap.p > 0.02) {
                 const bw = 40, bh = 6, by = -24;
                 ctx.fillStyle = "#0009";
@@ -806,6 +1060,7 @@
             const dt = Math.min((ts - lastTs) / 1000, 0.05);
             lastTs = ts;
             step(dt);
+            if (solo) soloTick(dt);
             draw(ts / 1000);
         }
 
@@ -825,6 +1080,8 @@
             },
             restart() {
                 // Standard "play again" just reopens the join panel.
+                solo = false;
+                soloSim = null;
                 havePos = false;
                 if (ws) { try { ws.close(); } catch (e) { /* ignore */ } ws = null; }
                 showJoin();
