@@ -36,7 +36,7 @@
 
         // Game objects
         let ship, bullets, rocks, particles, engineParts;
-        let stars, galaxies, planets, debris;
+        let starLayers, galaxies, planets, debris;
 
         // State
         let score, alive, started, elapsed;
@@ -92,38 +92,79 @@
             }
         }
 
+        // ── Background recycling ─────────────────────────────────────────────
+        // Planets & galaxies start small/far, grow as they drift closer, then
+        // recycle into a brand-new world once they've "passed" the viewer.
+        const PLANET_MAX  = 1.5;
+        const GALAXY_MAX  = 1.6;
+        const GALAXY_HUES = [200, 260, 320, 170, 290, 30];
+
+        function resetPlanet(p) {
+            p = p || {};
+            let def;   // avoid repeating the archetype that just left
+            do { def = PLANET_DEFS[Math.floor(Math.random() * PLANET_DEFS.length)]; }
+            while (PLANET_DEFS.length > 1 && def === p.def);
+            p.def      = def;
+            p.scale    = 0.18 + Math.random() * 0.12;
+            p.grow     = 0.022 + Math.random() * 0.028;
+            p.x        = W * (0.1 + Math.random() * 0.8);
+            p.y        = H * (0.08 + Math.random() * 0.7);
+            p.vx       = (Math.random() - 0.5) * 5;
+            p.vy       = (Math.random() - 0.5) * 5 + 1.5;
+            p.ringTilt = 0.18 + Math.random() * 0.28;
+            return p;
+        }
+
+        function resetGalaxy(g) {
+            g = g || {};
+            let hue;   // avoid repeating the hue that just left
+            do { hue = GALAXY_HUES[Math.floor(Math.random() * GALAXY_HUES.length)]; }
+            while (GALAXY_HUES.length > 1 && hue === g.hue);
+            g.hue   = hue;
+            g.scale = 0.2 + Math.random() * 0.18;
+            g.grow  = 0.01 + Math.random() * 0.018;
+            g.baseR = 55 + Math.random() * 80;
+            g.ratio = 0.3 + Math.random() * 0.3;
+            g.x     = Math.random() * W;
+            g.y     = Math.random() * H;
+            g.vx    = (Math.random() - 0.5) * 4;
+            g.vy    = (Math.random() - 0.5) * 4;
+            g.angle = Math.random() * Math.PI;
+            return g;
+        }
+
         // ── Scene setup ──────────────────────────────────────────────────────
         function buildScene() {
-            stars = [];
-            for (let i = 0; i < 90; i++) {
-                stars.push({ x: Math.random() * W, y: Math.random() * H,
-                    s: Math.random() * 1.8 + 0.3, v: Math.random() * 14 + 6,
-                    tw: Math.random() * Math.PI * 2 });
+            // Parallax star layers: far (slow/dim/small) → near (fast/bright/big)
+            starLayers = [
+                { speed: 5,  alpha: 0.30, size: [0.4, 1.0], count: 46 },
+                { speed: 13, alpha: 0.50, size: [0.6, 1.4], count: 34 },
+                { speed: 26, alpha: 0.78, size: [0.9, 2.0], count: 22 },
+            ];
+            for (const layer of starLayers) {
+                layer.stars = [];
+                for (let i = 0; i < layer.count; i++) {
+                    layer.stars.push({
+                        x: Math.random() * W, y: Math.random() * H,
+                        s: layer.size[0] + Math.random() * (layer.size[1] - layer.size[0]),
+                        tw: Math.random() * Math.PI * 2,
+                        tws: 0.6 + Math.random() * 1.4
+                    });
+                }
             }
 
             galaxies = [];
             for (let i = 0; i < 3; i++) {
-                galaxies.push({
-                    x: Math.random() * W, y: Math.random() * H,
-                    rx: 55 + Math.random() * 90, ry: 18 + Math.random() * 35,
-                    angle: Math.random() * Math.PI,
-                    hue: [200, 260, 320][i % 3],
-                    v: 1.5 + Math.random() * 2.5
-                });
+                const g = resetGalaxy();
+                g.scale = 0.25 + Math.random() * (GALAXY_MAX - 0.4);   // stagger start
+                galaxies.push(g);
             }
 
             planets = [];
-            // Shuffle planet archetypes and pick 2
-            const pool = PLANET_DEFS.slice().sort(() => Math.random() - 0.5);
             for (let i = 0; i < 2; i++) {
-                const def = pool[i];
-                planets.push({
-                    x: W * (0.12 + Math.random() * 0.76),
-                    y: H  * (0.08 + Math.random() * 0.55),
-                    r: def.r, light: def.light, mid: def.mid, dark: def.dark,
-                    hasRing: def.hasRing, ringTilt: 0.18 + Math.random() * 0.28,
-                    v: 3 + Math.random() * 5, vx: (Math.random() - 0.5) * 2.5
-                });
+                const p = resetPlanet();
+                p.scale = 0.25 + Math.random() * (PLANET_MAX - 0.45);  // stagger start
+                planets.push(p);
             }
 
             debris = [];
@@ -276,21 +317,22 @@
 
         // ── Update ───────────────────────────────────────────────────────────
         function updateBackground(dt) {
-            for (const st of stars) {
-                st.y  += st.v * dt;
-                st.tw += dt * 1.4;
-                if (st.y > H) { st.y = -2; st.x = Math.random() * W; }
+            for (const layer of starLayers) {
+                for (const st of layer.stars) {
+                    st.y  += layer.speed * dt;
+                    st.tw += dt * st.tws;
+                    if (st.y > H) { st.y = -2; st.x = Math.random() * W; }
+                }
             }
             for (const g of galaxies) {
-                g.y += g.v * dt;
-                if (g.y > H + g.ry * 2) { g.y = -g.ry * 2; g.x = Math.random() * W; }
+                g.scale += g.grow * dt;
+                g.x += g.vx * dt; g.y += g.vy * dt;
+                if (g.scale > GALAXY_MAX) resetGalaxy(g);
             }
             for (const p of planets) {
-                p.y += p.v * dt;
-                p.x += p.vx * dt;
-                if (p.x < -p.r * 3) p.x = W + p.r * 3;
-                if (p.x > W + p.r * 3) p.x = -p.r * 3;
-                if (p.y > H + p.r * 3) { p.y = -p.r * 3; p.x = W * (0.1 + Math.random() * 0.8); }
+                p.scale += p.grow * dt;
+                p.x += p.vx * dt; p.y += p.vy * dt;
+                if (p.scale > PLANET_MAX) resetPlanet(p);
             }
             for (const d of debris) {
                 d.x += d.vx * dt; d.y += d.vy * dt; d.rot += d.vr * dt;
@@ -514,83 +556,94 @@
             ctx.fillStyle = "#060612";
             ctx.fillRect(0, 0, W, H);
 
-            // Galaxies — soft glowing ellipses
+            // Galaxies — soft glowing ellipses drifting closer, looping forever
             for (const g of galaxies) {
+                const rx = g.baseR * g.scale;
+                const ry = rx * g.ratio;
+                const a  = Math.max(0, Math.min(1, (g.scale - 0.2) / 0.4, (GALAXY_MAX - g.scale) / 0.5));
                 ctx.save();
+                ctx.globalAlpha = a;
                 ctx.translate(g.x, g.y);
                 ctx.rotate(g.angle);
-                ctx.scale(1, g.ry / g.rx);
-                const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, g.rx);
+                ctx.scale(1, ry / rx);
+                const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
                 grad.addColorStop(0,   `hsla(${g.hue},65%,70%,0.16)`);
                 grad.addColorStop(0.4, `hsla(${g.hue},55%,50%,0.07)`);
                 grad.addColorStop(1,   `hsla(${g.hue},40%,30%,0)`);
                 ctx.fillStyle = grad;
                 ctx.beginPath();
-                ctx.arc(0, 0, g.rx, 0, Math.PI * 2);
+                ctx.arc(0, 0, rx, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.restore();
             }
+            ctx.globalAlpha = 1;
 
-            // Planets
+            // Planets — grow as they approach, fade in/out, recycle as new worlds
             for (const p of planets) {
+                const def = p.def;
+                const r   = def.r * p.scale;
+                const a   = Math.max(0, Math.min(1, (p.scale - 0.18) / 0.32, (PLANET_MAX - p.scale) / 0.4)) * 0.6;
                 ctx.save();
-                ctx.globalAlpha = 0.52;
+                ctx.globalAlpha = a;
                 ctx.translate(p.x, p.y);
 
                 // Glow halo
-                const halo = ctx.createRadialGradient(0, 0, p.r * 0.6, 0, 0, p.r * 2.2);
-                halo.addColorStop(0, p.mid + "38");
+                const halo = ctx.createRadialGradient(0, 0, r * 0.6, 0, 0, r * 2.2);
+                halo.addColorStop(0, def.mid + "38");
                 halo.addColorStop(1, "transparent");
                 ctx.fillStyle = halo;
                 ctx.beginPath();
-                ctx.arc(0, 0, p.r * 2.2, 0, Math.PI * 2);
+                ctx.arc(0, 0, r * 2.2, 0, Math.PI * 2);
                 ctx.fill();
 
                 // Ring (before body so body overlaps it)
-                if (p.hasRing) {
+                if (def.hasRing) {
                     ctx.save();
                     ctx.scale(1, p.ringTilt);
-                    ctx.strokeStyle = p.mid + "88";
-                    ctx.lineWidth   = p.r * 0.4;
+                    ctx.strokeStyle = def.mid + "88";
+                    ctx.lineWidth   = r * 0.4;
                     ctx.beginPath();
-                    ctx.arc(0, 0, p.r * 1.7, 0, Math.PI * 2);
+                    ctx.arc(0, 0, r * 1.7, 0, Math.PI * 2);
                     ctx.stroke();
                     // Ring inner darker band
-                    ctx.strokeStyle = p.dark + "55";
-                    ctx.lineWidth   = p.r * 0.15;
+                    ctx.strokeStyle = def.dark + "55";
+                    ctx.lineWidth   = r * 0.15;
                     ctx.beginPath();
-                    ctx.arc(0, 0, p.r * 1.55, 0, Math.PI * 2);
+                    ctx.arc(0, 0, r * 1.55, 0, Math.PI * 2);
                     ctx.stroke();
                     ctx.restore();
                 }
 
                 // Planet body with radial gradient
-                const body = ctx.createRadialGradient(-p.r * 0.32, -p.r * 0.32, 0, 0, 0, p.r);
-                body.addColorStop(0,   p.light);
-                body.addColorStop(0.55, p.mid);
-                body.addColorStop(1,   p.dark);
+                const body = ctx.createRadialGradient(-r * 0.32, -r * 0.32, 0, 0, 0, r);
+                body.addColorStop(0,   def.light);
+                body.addColorStop(0.55, def.mid);
+                body.addColorStop(1,   def.dark);
                 ctx.fillStyle = body;
                 ctx.beginPath();
-                ctx.arc(0, 0, p.r, 0, Math.PI * 2);
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
                 ctx.fill();
 
                 // Terminator shadow (right side)
-                const shadow = ctx.createRadialGradient(p.r * 0.3, 0, 0, p.r * 0.3, 0, p.r * 1.1);
+                const shadow = ctx.createRadialGradient(r * 0.3, 0, 0, r * 0.3, 0, r * 1.1);
                 shadow.addColorStop(0, "transparent");
                 shadow.addColorStop(1, "rgba(0,0,0,0.55)");
                 ctx.fillStyle = shadow;
                 ctx.beginPath();
-                ctx.arc(0, 0, p.r, 0, Math.PI * 2);
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
                 ctx.fill();
 
                 ctx.restore();
             }
+            ctx.globalAlpha = 1;
 
-            // Stars — twinkle
-            for (const st of stars) {
-                ctx.globalAlpha = (0.5 + 0.5 * Math.sin(st.tw)) * 0.7;
-                ctx.fillStyle   = "#c8d0ff";
-                ctx.fillRect(st.x, st.y, st.s, st.s);
+            // Stars — parallax layers, each drifting at its own speed
+            for (const layer of starLayers) {
+                for (const st of layer.stars) {
+                    ctx.globalAlpha = (0.45 + 0.55 * Math.sin(st.tw)) * layer.alpha;
+                    ctx.fillStyle   = "#c8d0ff";
+                    ctx.fillRect(st.x, st.y, st.s, st.s);
+                }
             }
             ctx.globalAlpha = 1;
 
