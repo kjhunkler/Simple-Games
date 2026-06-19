@@ -25,7 +25,14 @@
         const kids = !!host.kids;
         const MAX_LIVES = kids ? 5 : 3;
         const GRACE_TIME = kids ? 3 : 2.2;
-        const SPEED_SCALE = kids ? 0.62 : 1;
+        // Kids mode: slower traffic and noticeably wider spacing between rows so
+        // there's more time to react and slip into the open lane. The wider gap
+        // also keeps consecutive rows from overlapping into one collision band
+        // (which previously could block all three lanes at once).
+        const SPEED_SCALE = kids ? 0.5 : 1;
+        const SPAWN_BASE = kids ? 1.2 : 0.85;
+        const SPAWN_MIN = kids ? 0.8 : 0.42;
+        const FIRST_SPAWN = kids ? 0.8 : 0.4;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -61,7 +68,7 @@
             started = false;
             lives = MAX_LIVES;
             invuln = 0;
-            spawnTimer = 0.4;
+            spawnTimer = FIRST_SPAWN;
             speed = 300 * SPEED_SCALE;
             lastOpenLane = 1;
             lastTs = 0;
@@ -102,15 +109,18 @@
 
             for (let i = 0; i < count; i++) {
                 const lane = blockable[i];
-                const kind = Math.random() < 0.18 ? "cone" : "car";
+                // Semi trucks (longer, harder to dodge) mix in with the cars.
+                // They travel at the same speed as everything else so the
+                // "one lane always reachable" guarantee above still holds.
+                const truck = Math.random() < 0.22;
                 things.push({
                     lane: lane,
                     y: -90,
                     coin: false,
-                    kind: kind,
+                    kind: truck ? "truck" : "car",
                     color: CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)],
-                    w: kind === "cone" ? 30 : 44,
-                    h: kind === "cone" ? 30 : 74,
+                    w: truck ? 48 : 44,
+                    h: truck ? 100 : 74,
                     wob: Math.random() * Math.PI * 2
                 });
             }
@@ -191,7 +201,7 @@
 
             spawnTimer -= dt;
             if (spawnTimer <= 0) {
-                spawnTimer = Math.max(0.42, 0.85 - distance / 9000);
+                spawnTimer = Math.max(SPAWN_MIN, SPAWN_BASE - distance / 9000);
                 spawnRow();
             }
 
@@ -279,24 +289,45 @@
             ctx.restore();
         }
 
-        function drawCone(x, y, s, wob) {
+        /** Semi truck: a boxy trailer with a small cab, drawn nose-down. */
+        function drawTruck(x, y, w, h, colors, wob) {
             ctx.save();
-            ctx.translate(x, y + Math.sin(wob) * 1.5);
-            ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
+            ctx.translate(x, y + Math.sin(wob) * 0.8);
+
+            // Drop shadow
+            ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
             ctx.beginPath();
-            ctx.ellipse(0, s * 0.42, s * 0.55, s * 0.18, 0, 0, Math.PI * 2);
+            ctx.ellipse(0, h * 0.04, w * 0.66, h * 0.52, 0, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = "#ff8c42";
-            ctx.beginPath();
-            ctx.moveTo(0, -s * 0.55);
-            ctx.lineTo(s * 0.42, s * 0.4);
-            ctx.lineTo(-s * 0.42, s * 0.4);
-            ctx.closePath();
-            ctx.fill();
-            ctx.fillStyle = "#f2f3ff";
-            ctx.fillRect(-s * 0.26, -s * 0.08, s * 0.52, s * 0.14);
-            ctx.fillStyle = "#e0702a";
-            roundRect(-s * 0.5, s * 0.34, s, s * 0.14, s * 0.07);
+
+            // Wheels (poking out along the length)
+            ctx.fillStyle = "#12121f";
+            const wy = [-h * 0.34, -h * 0.04, h * 0.26];
+            for (const yy of wy) {
+                roundRect(-w / 2 - 4, yy, 6, h * 0.16, 3);
+                roundRect(w / 2 - 2, yy, 6, h * 0.16, 3);
+            }
+
+            // Trailer (the long rear box)
+            ctx.fillStyle = "#e8eaf2";
+            roundRect(-w / 2, -h * 0.46, w, h * 0.7, w * 0.12);
+            // Trailer seam lines
+            ctx.fillStyle = "rgba(0, 0, 0, 0.12)";
+            for (let i = 1; i < 3; i++) {
+                ctx.fillRect(-w / 2, -h * 0.46 + (h * 0.7) * (i / 3), w, 2);
+            }
+
+            // Cab (nose, painted in the truck's color)
+            ctx.fillStyle = colors.body;
+            roundRect(-w / 2, h * 0.18, w, h * 0.28, w * 0.2);
+            // Windshield
+            ctx.fillStyle = "#1b2438";
+            roundRect(-w * 0.36, h * 0.2, w * 0.72, h * 0.1, w * 0.1);
+            // Headlights
+            ctx.fillStyle = "#fff3c4";
+            roundRect(-w * 0.38, h / 2 - 8, w * 0.18, 6, 3);
+            roundRect(w * 0.2, h / 2 - 8, w * 0.18, 6, 3);
+
             ctx.restore();
         }
 
@@ -390,7 +421,7 @@
             for (const t of things) {
                 const x = laneX(t.lane);
                 if (t.coin) drawStar(x, t.y, t.w * 0.62, t.spin);
-                else if (t.kind === "cone") drawCone(x, t.y, t.w, t.wob);
+                else if (t.kind === "truck") drawTruck(x, t.y, t.w, t.h, t.color, t.wob);
                 else drawCar(x, t.y, t.w, t.h, t.color, false, Math.sin(t.wob) > 0.6);
             }
 
