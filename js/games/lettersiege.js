@@ -57,6 +57,7 @@
         let lastChance;           // true while the final-heart rescue puzzle is active
         let puzzle;
         let rafId, lastTs;
+        let speechPrimed = false;  // mobile speech unlock (set once, on first tap)
 
         // World pieces
         let buildings;
@@ -219,10 +220,26 @@
         function speak(text) {
             try {
                 if (!SGSound.isEnabled() || !("speechSynthesis" in window)) return;
-                window.speechSynthesis.cancel();
+                // Cancelling before the very first utterance can void the mobile
+                // speech unlock, so only interrupt once speech is already primed.
+                if (speechPrimed) window.speechSynthesis.cancel();
+                speechPrimed = true;
                 const u = new SpeechSynthesisUtterance(text);
                 u.rate = 0.9; u.pitch = 1.05; u.volume = 1;
                 window.speechSynthesis.speak(u);
+            } catch (e) { /* speech is a nice-to-have; never break the game */ }
+        }
+
+        // Mobile browsers only allow speech that begins inside a user gesture.
+        // Fire a near-silent utterance straight from the first tap to unlock it.
+        function primeSpeech() {
+            if (speechPrimed) return;
+            try {
+                if (!SGSound.isEnabled() || !("speechSynthesis" in window)) return;
+                const u = new SpeechSynthesisUtterance(" ");
+                u.volume = 0; u.rate = 1.2;
+                window.speechSynthesis.speak(u);
+                speechPrimed = true;
             } catch (e) { /* speech is a nice-to-have; never break the game */ }
         }
 
@@ -1685,6 +1702,7 @@
             e.preventDefault();
             const p = pointFromEvent(e);
             SGSound.unlock();
+            primeSpeech();
 
             if (mode === "intro") {
                 newRound();
