@@ -30,6 +30,10 @@
         const ROLL_CD = kids ? 0.6 : 0.85;      // roll cooldown after the i-frames
         const FIRST_BOSS = kids ? 2600 : 3400;  // distance before the first boss
         const BOSS_GAP = kids ? 4200 : 3800;    // distance between bosses
+        // Keep the ground (and the hero that runs on it) well clear of the screen
+        // bottom so a finger swiping/rolling doesn't land in the iOS home-indicator
+        // gesture zone, which switches apps instead of controlling the hero.
+        const GROUND_MARGIN = 110;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -38,7 +42,7 @@
             canvas.width = W * dpr;
             canvas.height = H * dpr;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            groundY = H - 70;
+            groundY = H - GROUND_MARGIN;
         }
 
         function reset() {

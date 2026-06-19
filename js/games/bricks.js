@@ -19,6 +19,10 @@
         const BALL_SPEED_SCALE = kids ? 0.74 : 1;
         const PADDLE_FRAC = kids ? 0.4 : 0.3;
         const PADDLE_MAX = kids ? 150 : 120;
+        // Lift the paddle well clear of the screen bottom so a finger dragging it
+        // doesn't land in the iOS home-indicator gesture zone (which swipes
+        // between apps instead of moving the paddle).
+        const PADDLE_BOTTOM_MARGIN = 110;
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -30,7 +34,7 @@
         }
 
         function reset() {
-            paddle = { w: Math.min(W * PADDLE_FRAC, PADDLE_MAX), h: 14, x: W / 2 - Math.min(W * PADDLE_FRAC, PADDLE_MAX) / 2, y: H - 56 };
+            paddle = { w: Math.min(W * PADDLE_FRAC, PADDLE_MAX), h: 14, x: W / 2 - Math.min(W * PADDLE_FRAC, PADDLE_MAX) / 2, y: H - PADDLE_BOTTOM_MARGIN };
             score = 0;
             lives = START_LIVES;
             level = 1;

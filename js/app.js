@@ -31,6 +31,7 @@
     let currentGame = null;
     let currentScore = 0;
     let deleteArmed = false;
+    let swRegistration = null;
 
     /* ---------- Navigation ---------- */
     function show(name) {
@@ -218,12 +219,23 @@
     }
 
     /* ---------- Home screen ---------- */
+    // Ask the service worker to look for a newer version. Skipped when offline
+    // so we don't fire a doomed network request. Any update found surfaces the
+    // usual prompt via the registration's "updatefound" handler.
+    function checkForUpdate() {
+        if (!swRegistration) return;
+        if ("onLine" in navigator && !navigator.onLine) return;
+        swRegistration.update().catch(() => { /* offline or unreachable is fine */ });
+    }
+
     function renderHome() {
         const profile = SGStorage.getActiveProfile();
         if (!profile) {
             show("profiles");
             return;
         }
+        // Returning to the main menu is a natural moment to look for a refresh.
+        checkForUpdate();
         $("#chip-avatar").textContent = profile.avatar;
         $("#chip-name").textContent = profile.name;
 
@@ -467,6 +479,7 @@
 
         window.addEventListener("load", () => {
             navigator.serviceWorker.register("./sw.js").then((reg) => {
+                swRegistration = reg;
                 // An update was already downloaded on a previous visit.
                 if (reg.waiting) showUpdatePrompt(reg.waiting);
 
