@@ -18,7 +18,7 @@
         M: ["Moon", "\u{1F319}"], N: ["Nose", "\u{1F443}"], O: ["Orange", "\u{1F34A}"],
         P: ["Pig", "\u{1F437}"], Q: ["Queen", "\u{1F451}"], R: ["Rainbow", "\u{1F308}"],
         S: ["Sun", "☀️"], T: ["Tiger", "\u{1F42F}"], U: ["Umbrella", "☂️"],
-        V: ["Violin", "\u{1F3BB}"], W: ["Whale", "\u{1F433}"], X: ["Fox", "\u{1F98A}"],
+        V: ["Violin", "\u{1F3BB}"], W: ["Whale", "\u{1F433}"], X: ["X-ray", "\u{1FA7B}"],
         Y: ["Yo-yo", "\u{1FA80}"], Z: ["Zebra", "\u{1F993}"]
     };
 
@@ -83,7 +83,7 @@
         R: [lineP(.27, .92, .27, .08), arcP(.27, .3, .4, .22, -90, 90), lineP(.37, .52, .76, .92)],
         S: [path([.78, .22, .66, .12, .46, .11, .3, .2, .28, .36, .42, .46, .6, .54, .72, .66, .7, .82, .54, .9, .34, .89, .22, .78])],
         T: [lineP(.18, .08, .82, .08), lineP(.5, .08, .5, .92)],
-        U: [cat(lineP(.27, .08, .27, .6), arcP(.5, .6, .23, .32, 180, 360), lineP(.73, .6, .73, .08))],
+        U: [cat(lineP(.27, .08, .27, .6), arcP(.5, .6, .23, .32, 180, 0), lineP(.73, .6, .73, .08))],
         V: [cat(lineP(.18, .08, .5, .92), lineP(.5, .92, .82, .08))],
         W: [cat(lineP(.12, .08, .32, .92), lineP(.32, .92, .5, .35), lineP(.5, .35, .68, .92), lineP(.68, .92, .88, .08))],
         X: [lineP(.22, .08, .78, .92), lineP(.78, .08, .22, .92)],
@@ -294,19 +294,20 @@
             const ch = ALPHABET[letterIdx];
             const word = WORDS[ch];
 
-            // ---- Header: big letter + example word ----
+            // ---- Header: big letter (left) + emoji & word as a centered block ----
             ctx.textBaseline = "middle";
             ctx.textAlign = "left";
             ctx.fillStyle = "#fff8d6";
-            ctx.font = "800 " + Math.floor(headerH * 0.62) + "px system-ui, sans-serif";
+            ctx.font = "800 " + Math.floor(headerH * 0.6) + "px system-ui, sans-serif";
             ctx.fillText(ch + ch.toLowerCase(), 16, headerH * 0.5);
 
-            ctx.textAlign = "right";
-            ctx.font = Math.floor(headerH * 0.34) + "px system-ui, sans-serif";
-            ctx.fillText(word[1], W - 16, headerH * 0.36);
+            const exCx = W * 0.62;          // centre the emoji over its word
+            ctx.textAlign = "center";
+            ctx.font = Math.floor(headerH * 0.36) + "px system-ui, sans-serif";
+            ctx.fillText(word[1], exCx, headerH * 0.37);
             ctx.fillStyle = "#ffffff";
-            ctx.font = "700 " + Math.floor(headerH * 0.24) + "px system-ui, sans-serif";
-            ctx.fillText(ch + " is for " + word[0], W - 16, headerH * 0.72);
+            ctx.font = "700 " + Math.floor(headerH * 0.2) + "px system-ui, sans-serif";
+            ctx.fillText(ch + " is for " + word[0], exCx, headerH * 0.74);
 
             // Buttons (speaker = replay, skip = next letter)
             const bs = Math.min(44, headerH * 0.5);
