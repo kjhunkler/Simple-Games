@@ -15,6 +15,26 @@
         "bughunt", "digger", "catcher", "turtlecave", "abctrace", "lettersiege"
     ];
 
+    // Home-screen categories and which one each game belongs to. Games missing
+    // from this map fall back to "classic" so a newly added game still shows up.
+    const CATEGORIES = [
+        { key: "classic", label: "Classic", emoji: "\u{1F579}️" },
+        { key: "puzzle", label: "Puzzle", emoji: "\u{1F9E9}" },
+        { key: "learning", label: "Learning", emoji: "\u{1F393}" },
+        { key: "scroller", label: "Scroller", emoji: "\u{1F3C3}" }
+    ];
+    const GAME_CATEGORY = {
+        snake: "classic", astro: "classic", piestack: "classic", moles: "classic",
+        bricks: "classic", fruit: "classic", stopspin: "classic", sentry: "classic",
+        bughunt: "classic", catcher: "classic",
+        memory: "puzzle", echo: "puzzle", tiles: "puzzle", colorrush: "puzzle", beatloop: "puzzle",
+        abctrace: "learning", lettersiege: "learning",
+        flappy: "scroller", hopper: "scroller", taptiles: "scroller", lanedash: "scroller",
+        stormquest: "scroller", digger: "scroller", turtlecave: "scroller"
+    };
+    function categoryOf(id) { return GAME_CATEGORY[id] || "classic"; }
+    let gameFilter = "all";
+
     const $ = (sel) => document.querySelector(sel);
 
     const screens = {
@@ -239,38 +259,80 @@
         $("#chip-avatar").textContent = profile.avatar;
         $("#chip-name").textContent = profile.name;
 
-        const grid = $("#game-grid");
-        grid.innerHTML = "";
-        for (const id of GAME_ORDER) {
-            const def = SGGames[id];
-            if (!def) continue;
-            const best = SGStorage.getBestScore(profile.id, id);
-            const card = document.createElement("button");
-            card.className = "game-card";
-            card.innerHTML =
-                '<span class="game-emoji"></span>' +
-                '<span class="game-name"></span>' +
-                '<span class="game-tag"></span>' +
-                '<span class="game-best"></span>';
-            card.querySelector(".game-emoji").textContent = def.emoji;
-            card.querySelector(".game-name").textContent = def.name;
-            card.querySelector(".game-tag").textContent = def.tag;
-            card.querySelector(".game-best").textContent = best > 0 ? "\u2B50 Best: " + best : "Not played yet";
-            card.addEventListener("click", () => {
-                // Some games (e.g. Bug Hunt) run as their own page on the game
-                // server. Open that directly, carrying the chosen profile, instead
-                // of hosting them inside the app shell.
-                if (typeof def.launchUrl === "function") {
-                    SGSound.play("tap");
-                    window.location.href = def.launchUrl(profile);
-                    return;
-                }
-                startGame(id);
+        renderGameFilters();
+        renderGameSections(profile);
+    }
+
+    // The filter chips: "All" plus one per category. Tapping re-renders the
+    // sections to show just that category.
+    function renderGameFilters() {
+        const bar = $("#game-filters");
+        bar.innerHTML = "";
+        const chips = [{ key: "all", label: "All", emoji: "\u{1F3AE}" }].concat(CATEGORIES);
+        for (const c of chips) {
+            const b = document.createElement("button");
+            b.className = "filter-chip" + (gameFilter === c.key ? " active" : "");
+            b.textContent = c.emoji + " " + c.label;
+            b.setAttribute("aria-pressed", gameFilter === c.key ? "true" : "false");
+            b.addEventListener("click", () => {
+                if (gameFilter === c.key) return;
+                gameFilter = c.key;
+                SGSound.play("tap");
+                vibrate(6);
+                renderGameFilters();
+                renderGameSections(SGStorage.getActiveProfile());
             });
-            // Once there's a score worth bragging about, offer a quick text share.
-            if (best > 0) addShareButton(card, def, best);
-            grid.appendChild(card);
+            bar.appendChild(b);
         }
+    }
+
+    function renderGameSections(profile) {
+        const wrap = $("#game-sections");
+        wrap.innerHTML = "";
+        for (const cat of CATEGORIES) {
+            if (gameFilter !== "all" && gameFilter !== cat.key) continue;
+            const ids = GAME_ORDER.filter(id => SGGames[id] && categoryOf(id) === cat.key);
+            if (ids.length === 0) continue;
+
+            const title = document.createElement("h3");
+            title.className = "category-title";
+            title.textContent = cat.emoji + " " + cat.label;
+            wrap.appendChild(title);
+
+            const grid = document.createElement("div");
+            grid.className = "game-grid";
+            for (const id of ids) grid.appendChild(makeGameCard(SGGames[id], id, profile));
+            wrap.appendChild(grid);
+        }
+    }
+
+    function makeGameCard(def, id, profile) {
+        const best = SGStorage.getBestScore(profile.id, id);
+        const card = document.createElement("button");
+        card.className = "game-card";
+        card.innerHTML =
+            '<span class="game-emoji"></span>' +
+            '<span class="game-name"></span>' +
+            '<span class="game-tag"></span>' +
+            '<span class="game-best"></span>';
+        card.querySelector(".game-emoji").textContent = def.emoji;
+        card.querySelector(".game-name").textContent = def.name;
+        card.querySelector(".game-tag").textContent = def.tag;
+        card.querySelector(".game-best").textContent = best > 0 ? "\u2B50 Best: " + best : "Not played yet";
+        card.addEventListener("click", () => {
+            // Some games (e.g. Bug Hunt) run as their own page on the game
+            // server. Open that directly, carrying the chosen profile, instead
+            // of hosting them inside the app shell.
+            if (typeof def.launchUrl === "function") {
+                SGSound.play("tap");
+                window.location.href = def.launchUrl(profile);
+                return;
+            }
+            startGame(id);
+        });
+        // Once there's a score worth bragging about, offer a quick text share.
+        if (best > 0) addShareButton(card, def, best);
+        return card;
     }
 
     /* ---------- Game hosting ---------- */
