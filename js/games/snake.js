@@ -61,8 +61,39 @@
             started = true;
         }
 
+        function autoTurn() {
+            // Perpendicular options to the current heading.
+            const opts = dir.x !== 0 ? [{ x: 0, y: -1 }, { x: 0, y: 1 }]
+                                     : [{ x: -1, y: 0 }, { x: 1, y: 0 }];
+            const h = snake[0];
+            // Prefer the turn that lands closest to the nearest fruit.
+            opts.sort((a, b) => {
+                const da = Math.abs(h.x + a.x - food.x) + Math.abs(h.y + a.y - food.y);
+                const db = Math.abs(h.x + b.x - food.x) + Math.abs(h.y + b.y - food.y);
+                return da - db;
+            });
+            let fallback = null;
+            for (const d of opts) {
+                const nx = h.x + d.x, ny = h.y + d.y;
+                if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
+                if (fallback === null) fallback = d;
+                if (!snake.some(s => s.x === nx && s.y === ny)) return d;
+            }
+            return fallback || dir;
+        }
+
         function step() {
             dir = nextDir;
+
+            // Kids mode: steer away from a wall instead of crashing into it.
+            if (kids) {
+                const ahead = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+                if (ahead.x < 0 || ahead.x >= COLS || ahead.y < 0 || ahead.y >= ROWS) {
+                    dir = autoTurn();
+                    nextDir = dir;
+                }
+            }
+
             const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
 
             if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS ||
