@@ -62,11 +62,11 @@
         }
 
         function makeVerts(r) {
-            const n = 9, v = [];
+            const n = Math.max(9, Math.round(r * 0.65)), v = [];
             for (let i = 0; i < n; i++) {
-                const a = (i / n) * Math.PI * 2;
-                v.push({ x: Math.cos(a) * r * (0.74 + Math.random() * 0.3),
-                         y: Math.sin(a) * r * (0.74 + Math.random() * 0.3) });
+                const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI / n) * 0.7;
+                v.push({ x: Math.cos(a) * r * (0.68 + Math.random() * 0.34),
+                         y: Math.sin(a) * r * (0.68 + Math.random() * 0.34) });
             }
             return v;
         }
@@ -89,6 +89,26 @@
                     vx: Math.cos(a) * s, vy: Math.sin(a) * s,
                     life: 1, decay: Math.random() * 1.6 + 1.2,
                     color, size: Math.random() * 3.5 + 1.5 });
+            }
+        }
+
+        function toLocalRock(rock, wx, wy) {
+            const dx = wx - rock.x, dy = wy - rock.y;
+            const c = Math.cos(-rock.rot), s = Math.sin(-rock.rot);
+            return { x: dx * c - dy * s, y: dx * s + dy * c };
+        }
+
+        function addCrack(rock, lx, ly) {
+            const n = 2 + Math.floor(Math.random() * 3);
+            for (let i = 0; i < n; i++) {
+                const a = Math.random() * Math.PI * 2;
+                const len = rock.r * (0.3 + Math.random() * 0.55);
+                rock.cracks.push({
+                    x1: lx * 0.25,
+                    y1: ly * 0.25,
+                    x2: lx * 0.25 + Math.cos(a) * len,
+                    y2: ly * 0.25 + Math.sin(a) * len
+                });
             }
         }
 
@@ -231,20 +251,47 @@
         }
 
         function spawnRock() {
-            const r = Math.random() * 22 + 14;
+            // Tier: bigger, tougher asteroids appear at higher waves
+            const roll = Math.random();
+            let tier;
+            if (wave >= 8 && roll < 0.15) tier = 3;
+            else if (wave >= 4 && roll < 0.15 + Math.min((wave - 4) * 0.055, 0.35)) tier = 2;
+            else tier = 1;
+
+            const rRanges = [[12, 22], [24, 36], [40, 54]];
+            const [rMin, rMax] = rRanges[tier - 1];
+            const r = Math.random() * (rMax - rMin) + rMin;
             const x = Math.random() * (W - r * 2) + r;
-            const waveBump = 1 + (wave - 1) * 0.14;
-            const speed = ((Math.random() * 40 + 55) + Math.min(elapsed * 1.5, 90))
+
+            const waveBump = 1 + (wave - 1) * 0.12;
+            const baseSpeeds = [62, 46, 30];
+            const speed = ((Math.random() * 30 + baseSpeeds[tier - 1]) + Math.min(elapsed * 1.3, 80))
                           * ROCK_SPD_SCALE * waveBump;
-            const toughBonus = Math.floor((wave - 1) / 4);   // +1 HP every 4 waves
+
+            const toughBonus = Math.floor((wave - 1) / 4);
+            const baseHp = [1, 3, 6][tier - 1];
+
+            // Craters for surface texture
+            const craters = [];
+            const craterN = Math.floor(r / 9) + 1;
+            for (let i = 0; i < craterN; i++) {
+                const ca = Math.random() * Math.PI * 2;
+                const cr = r * 0.07 + Math.random() * r * 0.13;
+                const cd = Math.random() * (r - cr) * 0.6;
+                craters.push({ x: Math.cos(ca) * cd, y: Math.sin(ca) * cd, r: cr });
+            }
+
             rocks.push({
-                x, y: -r - 10, r,
-                vx: (Math.random() - 0.5) * (50 + (wave - 1) * 6),
+                x, y: -r - 10, r, tier,
+                vx: (Math.random() - 0.5) * (42 + (wave - 1) * 5),
                 vy: speed,
                 rot: Math.random() * Math.PI * 2,
-                vr: (Math.random() - 0.5) * 2.4,
-                hp: (r > 26 ? 2 : 1) + toughBonus,
+                vr: (Math.random() - 0.5) * (tier === 3 ? 0.9 : tier === 2 ? 1.6 : 2.5),
+                hp: baseHp + toughBonus,
+                maxHp: baseHp + toughBonus,
                 verts: makeVerts(r),
+                craters,
+                cracks: [],
                 flashT: 0
             });
         }
@@ -362,16 +409,19 @@
             if (Math.hypot(dx, dy) < 6) return;
             const inv = 1 / Math.hypot(dx, dy);
             const nx = -dx * inv, ny = -dy * inv;
-            const spread = 0.55;
-            const a = Math.atan2(ny, nx) + (Math.random() - 0.5) * spread;
-            const spd = 50 + Math.random() * 70;
-            engineParts.push({
-                x: ship.x + nx * ship.r * 0.9 + (Math.random() - 0.5) * 5,
-                y: ship.y + ny * ship.r * 0.9 + (Math.random() - 0.5) * 5,
-                vx: Math.cos(a) * spd, vy: Math.sin(a) * spd + 35,
-                life: 1, size: Math.random() * 5 + 2.5,
-                color: Math.random() < 0.6 ? "#ff9a3c" : "#ffd166"
-            });
+            const spread = 0.45;
+            for (const side of [-1, 1]) {
+                if (Math.random() > 0.7) continue;
+                const a = Math.atan2(ny, nx) + (Math.random() - 0.5) * spread;
+                const spd = 45 + Math.random() * 65;
+                engineParts.push({
+                    x: ship.x + side * ship.r * 0.38,
+                    y: ship.y + ship.r * 0.88,
+                    vx: Math.cos(a) * spd, vy: Math.sin(a) * spd + 30,
+                    life: 1, size: Math.random() * 4 + 2,
+                    color: Math.random() < 0.6 ? "#ff9a3c" : "#ffd166"
+                });
+            }
         }
 
         function update(dt) {
@@ -459,13 +509,18 @@
                     rock.flashT = 1;
 
                     if (rock.hp <= 0) {
-                        score += rock.r > 26 ? 2 : 1;
+                        const pts = rock.tier === 3 ? 8 : rock.tier === 2 ? 3 : 1;
+                        score += pts;
                         host.setScore(score);
                         rocksKilled += 1;
                         host.vibrate(12);
                         SGSound.play("hit");
-                        explode(rock.x, rock.y, "#ffd166", 14 + wave, 170);
-                        explode(rock.x, rock.y, "#6b6b94", 6, 80);
+                        const pCount = 14 + wave + (rock.tier - 1) * 12;
+                        const pSpd   = 160 + (rock.tier - 1) * 40;
+                        const killColors = [["#ffd166","#6b6b94"],["#ffb060","#8b5e3c"],["#ff5050","#ff9a3c"]];
+                        const kc = killColors[rock.tier - 1];
+                        explode(rock.x, rock.y, kc[0], pCount, pSpd);
+                        explode(rock.x, rock.y, kc[1], Math.ceil(pCount * 0.4), pSpd * 0.5);
                         rocks.splice(i, 1);
                         destroyed = true;
                         // Pierce through a single destroyed rock, then the bullet stops
@@ -475,7 +530,9 @@
                             bullets.splice(j, 1);
                         }
                     } else {
-                        // Rock survived — bullet is spent even with piercing rounds
+                        // Rock survived — add crack lines, bullet is spent
+                        const lh = toLocalRock(rock, b.x, b.y);
+                        addCrack(rock, lh.x, lh.y);
                         explode(b.x, b.y, "#9aa0c3", 5, 90);
                         SGSound.play("flip");
                         bullets.splice(j, 1);
@@ -693,27 +750,91 @@
             ctx.shadowBlur = 0;
 
             // Rocks
+            const TIER_STYLES = [
+                { fill: "#4a4a6e", stroke: "#7474ae", dark: "#2a2a48", craterRim: "rgba(160,160,220,0.18)" },
+                { fill: "#68502e", stroke: "#9a7a4a", dark: "#3a2a14", craterRim: "rgba(200,160,80,0.18)"  },
+                { fill: "#6e2e2e", stroke: "#a04848", dark: "#3a1414", craterRim: "rgba(220,100,80,0.18)"  },
+            ];
             for (const rock of rocks) {
                 ctx.save();
                 ctx.translate(rock.x, rock.y);
                 ctx.rotate(rock.rot);
                 const lit = rock.flashT > 0;
-                ctx.fillStyle   = lit ? `rgba(255,255,255,${0.6 + rock.flashT * 0.4})`
-                                      : (rock.hp > 1 ? "#6b6b94" : "#55557d");
-                ctx.strokeStyle = lit ? "#ffffff" : "#8a8fb9";
-                ctx.lineWidth   = 2;
+                const ts = TIER_STYLES[(rock.tier || 1) - 1];
+
+                // Outer glow for large rocks
+                if (!lit && rock.tier === 3) {
+                    ctx.shadowColor = "#ff5050";
+                    ctx.shadowBlur  = 18;
+                }
+
+                // Base fill
+                ctx.fillStyle   = lit ? `rgba(255,255,255,${0.55 + rock.flashT * 0.45})` : ts.fill;
+                ctx.strokeStyle = lit ? "#ffffff" : ts.stroke;
+                ctx.lineWidth   = rock.tier === 3 ? 3 : rock.tier === 2 ? 2.5 : 2;
                 ctx.beginPath();
                 ctx.moveTo(rock.verts[0].x, rock.verts[0].y);
                 for (let i = 1; i < rock.verts.length; i++) ctx.lineTo(rock.verts[i].x, rock.verts[i].y);
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
-                // Gold dot on tough rocks
-                if (rock.hp > 1 && !lit) {
-                    ctx.fillStyle = "#ffd166";
+                ctx.shadowBlur = 0;
+
+                if (!lit) {
+                    // Surface shading: radial gradient simulating top-left light
+                    const shade = ctx.createRadialGradient(
+                        -rock.r * 0.3, -rock.r * 0.3, 0,
+                         rock.r * 0.2,  rock.r * 0.2, rock.r * 1.1);
+                    shade.addColorStop(0,   "rgba(255,255,255,0.07)");
+                    shade.addColorStop(0.5, "rgba(0,0,0,0)");
+                    shade.addColorStop(1,   "rgba(0,0,0,0.38)");
+                    ctx.fillStyle = shade;
                     ctx.beginPath();
-                    ctx.arc(0, 0, 4, 0, Math.PI * 2);
+                    ctx.moveTo(rock.verts[0].x, rock.verts[0].y);
+                    for (let i = 1; i < rock.verts.length; i++) ctx.lineTo(rock.verts[i].x, rock.verts[i].y);
+                    ctx.closePath();
                     ctx.fill();
+
+                    // Craters
+                    if (rock.craters) {
+                        for (const c of rock.craters) {
+                            ctx.fillStyle = ts.dark;
+                            ctx.beginPath();
+                            ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.strokeStyle = ts.craterRim;
+                            ctx.lineWidth = 0.9;
+                            ctx.beginPath();
+                            ctx.arc(c.x - c.r * 0.18, c.y - c.r * 0.18, c.r * 0.82, 0, Math.PI * 2);
+                            ctx.stroke();
+                        }
+                    }
+
+                    // Crack lines (accumulate on each hit)
+                    if (rock.cracks && rock.cracks.length > 0) {
+                        const hpFrac = rock.hp / rock.maxHp;
+                        ctx.strokeStyle = `rgba(0,0,0,${0.55 + (1 - hpFrac) * 0.35})`;
+                        ctx.lineWidth = rock.tier === 3 ? 1.8 : 1.2;
+                        ctx.lineCap = "round";
+                        for (const crack of rock.cracks) {
+                            ctx.beginPath();
+                            ctx.moveTo(crack.x1, crack.y1);
+                            ctx.lineTo(crack.x2, crack.y2);
+                            ctx.stroke();
+                        }
+                        ctx.lineCap = "butt";
+                        // Bright crack edge on fresh damage
+                        if (rock.hp < rock.maxHp) {
+                            ctx.strokeStyle = `rgba(255,220,150,${0.15 * (1 - hpFrac)})`;
+                            ctx.lineWidth = 0.6;
+                            for (const crack of rock.cracks.slice(-4)) {
+                                ctx.beginPath();
+                                ctx.moveTo(crack.x1 + 0.5, crack.y1 + 0.5);
+                                ctx.lineTo(crack.x2 + 0.5, crack.y2 + 0.5);
+                                ctx.stroke();
+                            }
+                        }
+                    }
                 }
                 ctx.restore();
             }
@@ -722,6 +843,7 @@
             if (alive) {
                 ctx.save();
                 ctx.translate(ship.x, ship.y);
+                const r = ship.r;
 
                 // Shield ring — steady glow while charged, fast flash while invulnerable
                 if (shieldCharges > 0 || invuln > 0) {
@@ -734,47 +856,140 @@
                     ctx.strokeStyle = `rgba(57,208,255,${pulse})`;
                     ctx.lineWidth   = invuln > 0 ? 3.5 : 2.5;
                     ctx.beginPath();
-                    ctx.arc(0, 0, ship.r + 18, 0, Math.PI * 2);
+                    ctx.arc(0, 0, r + 20, 0, Math.PI * 2);
                     ctx.stroke();
                     ctx.restore();
                 }
 
-                // Engine flames
+                // Engine flames (drawn behind hull)
                 if (started) {
-                    ctx.fillStyle = `rgba(255,155,50,${0.5 + Math.random() * 0.45})`;
+                    const fl = r * 0.82 + Math.random() * r * 0.55;
+                    ctx.fillStyle = `rgba(255,145,35,${0.55 + Math.random() * 0.4})`;
                     ctx.beginPath();
-                    ctx.moveTo(-7, ship.r * 0.85);
-                    ctx.lineTo(0,  ship.r * 1.75 + Math.random() * 9);
-                    ctx.lineTo(7,  ship.r * 0.85);
+                    ctx.moveTo(-r * 0.56, r * 0.82);
+                    ctx.lineTo(-r * 0.36, r * 0.82 + fl);
+                    ctx.lineTo(-r * 0.16, r * 0.82);
                     ctx.closePath();
                     ctx.fill();
-                    ctx.fillStyle = `rgba(255,220,80,${0.55 + Math.random() * 0.4})`;
                     ctx.beginPath();
-                    ctx.moveTo(-3.5, ship.r * 0.88);
-                    ctx.lineTo(0,    ship.r * 1.45 + Math.random() * 5);
-                    ctx.lineTo(3.5,  ship.r * 0.88);
+                    ctx.moveTo(r * 0.16, r * 0.82);
+                    ctx.lineTo(r * 0.36, r * 0.82 + fl);
+                    ctx.lineTo(r * 0.56, r * 0.82);
+                    ctx.closePath();
+                    ctx.fill();
+                    // Inner hot cores
+                    ctx.fillStyle = `rgba(255,228,90,${0.6 + Math.random() * 0.35})`;
+                    ctx.beginPath();
+                    ctx.moveTo(-r * 0.5, r * 0.84);
+                    ctx.lineTo(-r * 0.36, r * 0.84 + fl * 0.68);
+                    ctx.lineTo(-r * 0.22, r * 0.84);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.moveTo(r * 0.22, r * 0.84);
+                    ctx.lineTo(r * 0.36, r * 0.84 + fl * 0.68);
+                    ctx.lineTo(r * 0.5,  r * 0.84);
                     ctx.closePath();
                     ctx.fill();
                 }
 
-                // Hull
-                ctx.shadowColor = "#39d0ff";
-                ctx.shadowBlur  = 12;
-                ctx.fillStyle   = "#39d0ff";
+                // Left wing (swept delta)
+                ctx.fillStyle = "#173452";
                 ctx.beginPath();
-                ctx.moveTo(0, -ship.r);
-                ctx.lineTo(ship.r * 0.85,  ship.r * 0.9);
-                ctx.lineTo(0,              ship.r * 0.45);
-                ctx.lineTo(-ship.r * 0.85, ship.r * 0.9);
+                ctx.moveTo(-r * 0.44, -r * 0.04);
+                ctx.lineTo(-r * 1.6,   r * 0.92);
+                ctx.lineTo(-r * 0.62,  r * 0.72);
+                ctx.lineTo(-r * 0.56,  r * 0.28);
+                ctx.closePath();
+                ctx.fill();
+
+                // Right wing
+                ctx.beginPath();
+                ctx.moveTo(r * 0.44, -r * 0.04);
+                ctx.lineTo(r * 1.6,   r * 0.92);
+                ctx.lineTo(r * 0.62,  r * 0.72);
+                ctx.lineTo(r * 0.56,  r * 0.28);
+                ctx.closePath();
+                ctx.fill();
+
+                // Wing leading-edge accent lines
+                ctx.shadowColor = "#39d0ff";
+                ctx.shadowBlur  = 7;
+                ctx.strokeStyle = "rgba(57,208,255,0.75)";
+                ctx.lineWidth   = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(-r * 0.42, r * 0.01);
+                ctx.lineTo(-r * 1.44, r * 0.84);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(r * 0.42, r * 0.01);
+                ctx.lineTo(r * 1.44, r * 0.84);
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+
+                // Main hull body
+                ctx.shadowColor = "#39d0ff";
+                ctx.shadowBlur  = 14;
+                ctx.fillStyle   = "#1a4260";
+                ctx.beginPath();
+                ctx.moveTo(0,          -r);
+                ctx.lineTo(r * 0.52,   -r * 0.08);
+                ctx.lineTo(r * 0.58,    r * 0.58);
+                ctx.lineTo(r * 0.34,    r * 0.88);
+                ctx.lineTo(-r * 0.34,   r * 0.88);
+                ctx.lineTo(-r * 0.58,   r * 0.58);
+                ctx.lineTo(-r * 0.52,  -r * 0.08);
                 ctx.closePath();
                 ctx.fill();
                 ctx.shadowBlur = 0;
 
-                // Cockpit
-                ctx.fillStyle = "#d6f4ff";
+                // Hull detail: center spine
+                ctx.strokeStyle = "rgba(57,208,255,0.45)";
+                ctx.lineWidth   = 1;
                 ctx.beginPath();
-                ctx.arc(0, -ship.r * 0.25, ship.r * 0.28, 0, Math.PI * 2);
+                ctx.moveTo(0, -r * 0.82);
+                ctx.lineTo(0,  r * 0.55);
+                ctx.stroke();
+
+                // Hull detail: lateral band
+                ctx.beginPath();
+                ctx.moveTo(-r * 0.5, r * 0.08);
+                ctx.lineTo( r * 0.5, r * 0.08);
+                ctx.stroke();
+
+                // Engine pods
+                ctx.fillStyle = "#0c1e30";
+                ctx.fillRect(-r * 0.63, r * 0.45, r * 0.29, r * 0.45);
+                ctx.fillRect( r * 0.34, r * 0.45, r * 0.29, r * 0.45);
+
+                // Engine nozzle glow rings
+                ctx.fillStyle = "rgba(57,208,255,0.55)";
+                ctx.beginPath();
+                ctx.ellipse(-r * 0.485, r * 0.89, r * 0.13, r * 0.055, 0, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.beginPath();
+                ctx.ellipse( r * 0.485, r * 0.89, r * 0.13, r * 0.055, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Cockpit dome with gradient
+                const cg = ctx.createRadialGradient(-r * 0.08, -r * 0.34, 0, 0, -r * 0.18, r * 0.3);
+                cg.addColorStop(0,   "#e6f8ff");
+                cg.addColorStop(0.45, "#39d0ff");
+                cg.addColorStop(1,   "#0c4a66");
+                ctx.fillStyle = cg;
+                ctx.beginPath();
+                ctx.ellipse(0, -r * 0.2, r * 0.22, r * 0.3, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Cockpit glint
+                ctx.fillStyle = "rgba(255,255,255,0.55)";
+                ctx.beginPath();
+                ctx.ellipse(-r * 0.07, -r * 0.34, r * 0.07, r * 0.046, -0.4, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Nose cannon tip
+                ctx.fillStyle = "#88bcd4";
+                ctx.fillRect(-1.5, -r - 5, 3, 7);
 
                 ctx.restore();
             }
