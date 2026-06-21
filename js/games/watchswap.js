@@ -1,7 +1,7 @@
-/* ============ Watch Swap — guard the wall (night core) ============ */
-/* Phase 0+1: landscape lock + the Knight Owl's night watch.
-   Patrol the wall, shine the lantern to scare wolves back into the trees,
-   or stow it to dash. Survive each night; the dial fills to dawn.        */
+/* ============ Watch Swap — guard the wall ============ */
+/* Night: the Knight Owl stands centre-wall and swipes to aim a narrow
+   lantern beam at the wolves converging on the gate — the beam burns oil.
+   Day: the Early Bird keeps the noise down so the Owl can sleep.          */
 (function () {
     "use strict";
 
@@ -13,14 +13,12 @@
         // --- Tunables (kids mode is gentler) ---
         const START_HEARTS = kids ? 5 : 3;
         const NIGHT_MS = kids ? 40000 : 46000;
-        const SLOW_FRAC = 0.30;            // patrol speed, lantern out (×W / sec)
-        const FAST_FRAC = 0.66;            // dash speed, lantern stowed
-        const BEAM_HALF = 0.40;            // beam cone half-angle (radians)
+        const BEAM_HALF = 0.16;                // narrow beam cone — aim matters
+        const MAX_TILT = kids ? 1.05 : 0.95;   // how far the beam swings from vertical
+        const AIM_LERP = 12;                   // how quickly the beam eases to the swipe
         const BUSH_COUNT = 6;
-        const TORCH_COUNT = 4;
         const OIL_MAX = kids ? 130 : 100;
-        const OIL_DRAIN = kids ? 2.0 : 3.4;    // per lit torch, per second
-        const TORCH_HALF = 0.34;               // torch light-cone half-angle
+        const BEAM_OIL_DRAIN = kids ? 3.5 : 5; // oil burned per second the beam is lit
         const DAY_MS = kids ? 32000 : 36000;
         const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
         const NOISE_MAX = 100;
@@ -30,8 +28,8 @@
         const LIGHT_DPS = 1.0;                 // light drains this much wolf health per second
 
         let W, H, unit, wallY, fieldTop, lanternY, ox, targetX, facing;
-        let bushes, wolves, torches, oil, hearts, score, night;
-        let lanternOut, started, alive, paused;
+        let bushes, wolves, oil, hearts, score, night;
+        let beamActive, beamAngle, beamTargetAngle, pointerDown, started, alive, paused;
         let spawnTimer, spawnInterval, wolfTravel, nightT;
         let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul;
         let disturbances, distSpawnTimer, distInterval, errand;
@@ -40,7 +38,6 @@
         let rafId, lastTs;
         let dragging = false;
         const keys = { left: false, right: false };
-        let stow = { x: 0, y: 0, r: 0 };
 
         function resize() {
             const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -54,10 +51,7 @@
             wallY = H * 0.82;
             fieldTop = H * 0.30;
             lanternY = wallY - unit * 0.14;
-            const r = unit * 0.085;
-            stow = { x: W - r - unit * 0.05, y: H - r - unit * 0.05, r: r };
             layoutBushes();
-            layoutTorches();
             owlSleepX = W * 0.16;
             oilBarrel = { x: W * 0.84 };
         }
@@ -70,15 +64,6 @@
             }
         }
 
-        function layoutTorches() {
-            const keep = torches;                  // preserve lit state across resizes
-            torches = [];
-            for (let i = 0; i < TORCH_COUNT; i++) {
-                const t = (i + 0.5) / TORCH_COUNT;
-                torches.push({ x: W * (0.12 + t * 0.76), lit: keep && keep[i] ? keep[i].lit : false });
-            }
-        }
-
         function reset() {
             ox = W / 2;
             targetX = ox;
@@ -87,13 +72,12 @@
             hearts = START_HEARTS;
             score = 0;
             night = 1;
-            lanternOut = true;
+            beamActive = false; beamAngle = 0; beamTargetAngle = 0; pointerDown = false;
             started = false;
             alive = true;
             paused = false;
             nightT = 0;
             oil = OIL_MAX;
-            for (const t of torches) t.lit = false;
             phase = "night";
             dayT = 0;
             noise = 0;
@@ -147,12 +131,11 @@
             applyNight();
             nightT = 0;
             wolves = [];
-            for (const t of torches) t.lit = false;
             beamHalfMul = owlRested ? 1 : 0.62;
             beamRangeMul = owlRested ? 1 : 0.68;
             if (owlRested) { score += 3; host.setScore(score); }   // quiet-day bonus
             ox = W / 2; targetX = ox; facing = 1;
-            lanternOut = true;
+            beamActive = false; beamAngle = 0; beamTargetAngle = 0; pointerDown = false;
             errand = null;
             spawnTimer = spawnInterval * 0.6;
             flash = 0.5;
@@ -226,51 +209,26 @@
             });
         }
 
-        function toggleLantern() {
-            lanternOut = !lanternOut;
-            started = true;
-            host.vibrate(8);
-            SGSound.play(lanternOut ? "flip" : "tap");
-        }
-
-        function toggleTorch(i) {
-            const t = torches[i];
-            if (t.lit) { t.lit = false; SGSound.play("tap"); }
-            else {
-                if (oil <= 1) { host.vibrate(40); SGSound.play("wrong"); return; }  // out of oil
-                t.lit = true; SGSound.play("eat");
-            }
-            host.vibrate(8); started = true;
+        // Point the beam toward the swiped column (clamped to the tilt range).
+        function aimBeam(x) {
+            const t = (x - W / 2) / (W * 0.5);
+            beamTargetAngle = Math.max(-MAX_TILT, Math.min(MAX_TILT, t * MAX_TILT));
         }
 
         /* ---------- Geometry ---------- */
         function clampX(x) { return Math.max(W * 0.06, Math.min(W * 0.94, x)); }
 
-        // Is the wolf inside the lit cone projecting up from the lantern?
+        // Is the wolf inside the aimed, narrow beam from the centered owl?
         function inBeam(w) {
-            if (!lanternOut) return false;
-            const dx = w.x - ox;
+            if (!beamActive || oil <= 0) return false;
+            const dx = w.x - W / 2;
             const dy = lanternY - w.y;            // positive = above the owl
             if (dy <= 0) return false;
-            const dist = Math.hypot(dx, dy);
-            if (dist > unit * 1.5 * beamRangeMul) return false;
-            const ang = Math.atan2(Math.abs(dx), dy); // 0 = straight up
-            return ang < BEAM_HALF * beamHalfMul;
+            if (Math.hypot(dx, dy) > unit * 1.7 * beamRangeMul) return false;
+            const ang = Math.atan2(dx, dy);       // signed: right of vertical = positive
+            return Math.abs(ang - beamAngle) < BEAM_HALF * beamHalfMul;
         }
-
-        // Lit by any wall torch's stationary cone?
-        function inTorchLight(w) {
-            const apexY = wallY - unit * 0.05;
-            for (const t of torches) {
-                if (!t.lit) continue;
-                const dx = w.x - t.x, dy = apexY - w.y;
-                if (dy <= 0) continue;
-                if (Math.hypot(dx, dy) > unit * 0.9) continue;
-                if (Math.atan2(Math.abs(dx), dy) < TORCH_HALF) return true;
-            }
-            return false;
-        }
-        function isLit(w) { return inBeam(w) || inTorchLight(w); }
+        function isLit(w) { return inBeam(w); }
 
         /* ---------- Update ---------- */
         function update(dt) {
@@ -286,7 +244,7 @@
             overlapKind = kind;
             overlapNext = nextFn;
             overlapT = 0;
-            errand = null; dragging = false;
+            errand = null; dragging = false; pointerDown = false;
             if (kind === "dawn") {
                 if (hearts < START_HEARTS) hearts += 1;       // a good night's rest
                 oil = Math.min(OIL_MAX, oil + 30);            // breakfast tops up the oil
@@ -320,19 +278,19 @@
         }
 
         function updateNight(dt) {
-            moveGuard(lanternOut ? SLOW_FRAC : FAST_FRAC, dt);
+            // The owl is fixed; the beam eases toward the swipe (or arrow keys).
+            if (keys.left) beamTargetAngle = -MAX_TILT;
+            else if (keys.right) beamTargetAngle = MAX_TILT;
+            beamActive = (pointerDown || keys.left || keys.right);
+            beamAngle += (beamTargetAngle - beamAngle) * Math.min(1, dt * AIM_LERP);
+            facing = beamAngle < 0 ? -1 : 1;
             if (!started) return;
 
             nightT += dt;
             if (nightT >= NIGHT_MS / 1000) { enterOverlap("dawn", enterDay); return; }
 
-            // Lit torches burn oil; when it runs dry they gutter out.
-            let litCount = 0;
-            for (const t of torches) if (t.lit) litCount++;
-            if (litCount > 0) {
-                oil = Math.max(0, oil - litCount * OIL_DRAIN * dt);
-                if (oil <= 0) for (const t of torches) t.lit = false;
-            }
+            // The beam burns oil while it's lit.
+            if (beamActive && oil > 0) oil = Math.max(0, oil - BEAM_OIL_DRAIN * dt);
 
             // Spawn wolves.
             spawnTimer -= dt;
@@ -341,11 +299,12 @@
                 if (wolves.length < 7) spawnWolf();
             }
 
-            const baseFall = (wallY - fieldTop) / wolfTravel; // px/sec downward
+            const v = (wallY - fieldTop) / wolfTravel;   // px/sec toward the gate
+            const gx = W / 2, gy = wallY - unit * 0.04;
             for (let i = wolves.length - 1; i >= 0; i--) {
                 const w = wolves[i];
                 w.wob += dt * 4;
-                const fall = baseFall * (w.stalker ? 1.45 : 1);
+                const speed = v * (w.stalker ? 1.45 : 1);
 
                 if (w.state === "lurk") {
                     if (isLit(w)) { w.hp -= LIGHT_DPS * dt; if (w.hp <= 0) scare(w); }
@@ -356,11 +315,14 @@
                         w.hp -= LIGHT_DPS * dt;
                         if (w.hp <= 0) scare(w);
                     } else {
-                        w.y += fall * dt;
-                        if (w.y >= wallY - unit * 0.04) { breach(); wolves.splice(i, 1); }
+                        // Advance toward the gate at the centre of the wall.
+                        const dxg = gx - w.x, dyg = gy - w.y, d = Math.hypot(dxg, dyg) || 1;
+                        w.x += (dxg / d) * speed * dt;
+                        w.y += (dyg / d) * speed * dt;
+                        if (w.y >= gy - 1) { breach(); wolves.splice(i, 1); }
                     }
                 } else if (w.state === "flee") {
-                    w.y -= fall * 2.2 * dt;
+                    w.y -= speed * 2.2 * dt;
                     if (w.y < fieldTop - unit * 0.08) wolves.splice(i, 1);
                 }
             }
@@ -454,22 +416,19 @@
             for (const w of wolves) if (w.state === "lurk") drawEyes(w.x, w.y, !w.stalker);
             for (const w of wolves) if (w.state !== "flee" && w.hp < w.maxHp) drawWolfHealth(w);
 
-            drawTorchCones();
-            if (lanternOut) drawBeam();
+            drawBeam();
             drawOwl();
             drawWall();
-            drawTorches();
             drawHUD();
 
             if (!started) {
                 ctx.fillStyle = "rgba(242,243,255,0.9)";
                 ctx.font = "600 " + Math.round(unit * 0.05) + "px Georgia, serif";
                 ctx.textAlign = "center";
-                ctx.fillText("Drag to patrol the wall", W / 2, fieldTop + unit * 0.16);
+                ctx.fillText("Swipe to aim the lantern beam", W / 2, fieldTop + unit * 0.16);
                 ctx.font = "500 " + Math.round(unit * 0.038) + "px Georgia, serif";
                 ctx.fillStyle = "rgba(242,243,255,0.7)";
-                ctx.fillText("Lantern lit: slow but scares wolves · stow it to dash", W / 2, fieldTop + unit * 0.24);
-                ctx.fillText("Tap a wall torch to light it — but it burns oil", W / 2, fieldTop + unit * 0.30);
+                ctx.fillText("Hold light on a wolf to drive it back — but the beam burns oil", W / 2, fieldTop + unit * 0.24);
             }
         }
 
@@ -543,69 +502,26 @@
         }
 
         function drawBeam() {
+            if (!beamActive || oil <= 0) return;
             const half = BEAM_HALF * beamHalfMul;
-            const len = unit * 1.4 * beamRangeMul;
-            const ax = ox, ay = lanternY;
-            const lx = ax - Math.sin(half) * len, rx = ax + Math.sin(half) * len;
-            const ty = ay - Math.cos(half) * len;
-            const g = ctx.createLinearGradient(ax, ay, ax, ty);
-            const a = beamRangeMul < 1 ? 0.22 : 0.34;   // a tired owl's beam is dimmer
+            const len = unit * 1.7 * beamRangeMul;
+            const ax = W / 2, ay = lanternY;
+            const a1 = beamAngle - half, a2 = beamAngle + half;
+            const x1 = ax + Math.sin(a1) * len, y1 = ay - Math.cos(a1) * len;
+            const x2 = ax + Math.sin(a2) * len, y2 = ay - Math.cos(a2) * len;
+            const cx = ax + Math.sin(beamAngle) * len, cy = ay - Math.cos(beamAngle) * len;
+            const g = ctx.createLinearGradient(ax, ay, cx, cy);
+            const a = beamRangeMul < 1 ? 0.28 : 0.42;   // a tired owl's beam is dimmer
             g.addColorStop(0, "rgba(255,231,168," + a + ")");
             g.addColorStop(1, "rgba(255,231,168,0)");
             ctx.fillStyle = g;
             ctx.beginPath();
-            ctx.moveTo(ax, ay); ctx.lineTo(lx, ty); ctx.lineTo(rx, ty); ctx.closePath();
+            ctx.moveTo(ax, ay); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.closePath();
             ctx.fill();
         }
 
-        function drawTorchCones() {
-            const len = unit * 0.9, apexY = wallY - unit * 0.05;
-            for (const t of torches) {
-                if (!t.lit) continue;
-                const lx = t.x - Math.sin(TORCH_HALF) * len, rx = t.x + Math.sin(TORCH_HALF) * len;
-                const ty = apexY - Math.cos(TORCH_HALF) * len;
-                const g = ctx.createLinearGradient(t.x, apexY, t.x, ty);
-                g.addColorStop(0, "rgba(255,210,120,0.28)");
-                g.addColorStop(1, "rgba(255,210,120,0)");
-                ctx.fillStyle = g;
-                ctx.beginPath(); ctx.moveTo(t.x, apexY); ctx.lineTo(lx, ty); ctx.lineTo(rx, ty); ctx.closePath(); ctx.fill();
-            }
-        }
-
-        function drawTorches() {
-            const baseY = wallY - unit * 0.04;
-            for (const t of torches) {
-                ctx.fillStyle = t.lit ? "#4a3a26" : "#3a2e1e";
-                ctx.fillRect(t.x - unit * 0.008, baseY, unit * 0.016, unit * 0.055);
-                if (t.lit) {
-                    const g = ctx.createRadialGradient(t.x, baseY, 2, t.x, baseY, unit * 0.09);
-                    g.addColorStop(0, "rgba(255,217,138,0.85)"); g.addColorStop(1, "rgba(255,206,106,0)");
-                    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(t.x, baseY, unit * 0.09, 0, 6.28); ctx.fill();
-                    ctx.fillStyle = "#ff9a36";
-                    ctx.beginPath();
-                    ctx.moveTo(t.x, baseY - unit * 0.05);
-                    ctx.quadraticCurveTo(t.x - unit * 0.018, baseY - unit * 0.01, t.x, baseY);
-                    ctx.quadraticCurveTo(t.x + unit * 0.018, baseY - unit * 0.01, t.x, baseY - unit * 0.05);
-                    ctx.fill();
-                    ctx.fillStyle = "#ffd24a";
-                    ctx.beginPath();
-                    ctx.moveTo(t.x, baseY - unit * 0.032);
-                    ctx.quadraticCurveTo(t.x - unit * 0.009, baseY - unit * 0.006, t.x, baseY);
-                    ctx.quadraticCurveTo(t.x + unit * 0.009, baseY - unit * 0.006, t.x, baseY - unit * 0.032);
-                    ctx.fill();
-                } else {
-                    // Dark sconce with a wisp of smoke — this is a gap wolves can use.
-                    ctx.strokeStyle = "rgba(120,120,140,0.45)"; ctx.lineWidth = unit * 0.005;
-                    ctx.beginPath();
-                    ctx.moveTo(t.x, baseY - unit * 0.01);
-                    ctx.quadraticCurveTo(t.x - unit * 0.02, baseY - unit * 0.04, t.x, baseY - unit * 0.06);
-                    ctx.stroke();
-                }
-            }
-        }
-
         function drawOwl() {
-            const cx = ox, baseY = wallY, h = unit * 0.2;
+            const cx = W / 2, baseY = wallY, h = unit * 0.2;   // owl is fixed at centre
             const headR = h * 0.42, bodyW = h * 0.5, bodyH = h * 0.6;
             const bodyCy = baseY - bodyH * 0.55;
             const headCy = bodyCy - bodyH * 0.55;
@@ -645,17 +561,18 @@
                 }
             }
 
-            // lantern (glows when out)
-            const lx = cx + facing * bodyW * 0.95, ly = bodyCy;
-            if (lanternOut) {
+            // lantern held up at centre — the beam's source (glows while lit)
+            const lit = beamActive && oil > 0;
+            const lx = cx, ly = lanternY;
+            if (lit) {
                 const g = ctx.createRadialGradient(lx, ly, 2, lx, ly, h * 0.6);
                 g.addColorStop(0, "rgba(255,243,204,0.9)"); g.addColorStop(1, "rgba(255,206,120,0)");
                 ctx.fillStyle = g; ctx.beginPath(); ctx.arc(lx, ly, h * 0.6, 0, 6.28); ctx.fill();
             }
             ctx.strokeStyle = "#4a3a26"; ctx.lineWidth = h * 0.03;
-            ctx.beginPath(); ctx.moveTo(cx + facing * bodyW * 0.5, bodyCy - bodyH * 0.1); ctx.lineTo(lx, ly - h * 0.12); ctx.stroke();
-            ctx.fillStyle = "#6e5a38"; ctx.fillRect(lx - h * 0.07, ly - h * 0.1, h * 0.14, h * 0.2);
-            ctx.fillStyle = lanternOut ? "#fff0b0" : "#5a4a2c"; ctx.fillRect(lx - h * 0.045, ly - h * 0.06, h * 0.09, h * 0.13);
+            ctx.beginPath(); ctx.moveTo(cx + facing * bodyW * 0.4, bodyCy - bodyH * 0.2); ctx.lineTo(lx, ly + h * 0.1); ctx.stroke();
+            ctx.fillStyle = "#6e5a38"; ctx.fillRect(lx - h * 0.07, ly - h * 0.02, h * 0.14, h * 0.2);
+            ctx.fillStyle = lit ? "#fff0b0" : "#5a4a2c"; ctx.fillRect(lx - h * 0.045, ly + h * 0.02, h * 0.09, h * 0.13);
         }
 
         function drawWall() {
@@ -746,17 +663,12 @@
                 ctx.textAlign = "center";
                 ctx.fillText("tired owl · dim beam", W / 2, unit * 0.165);
             }
-
-            // Stow / lantern button (bottom-right)
-            ctx.fillStyle = lanternOut ? "rgba(205,184,134,0.95)" : "rgba(120,110,150,0.95)";
-            ctx.strokeStyle = "#8a6d3f"; ctx.lineWidth = unit * 0.008;
-            ctx.beginPath(); ctx.arc(stow.x, stow.y, stow.r, 0, 6.28); ctx.fill(); ctx.stroke();
-            ctx.fillStyle = "#6e5a38"; ctx.fillRect(stow.x - stow.r * 0.22, stow.y - stow.r * 0.35, stow.r * 0.44, stow.r * 0.6);
-            ctx.fillStyle = lanternOut ? "#fff0b0" : "#3a3322";
-            ctx.fillRect(stow.x - stow.r * 0.13, stow.y - stow.r * 0.22, stow.r * 0.26, stow.r * 0.4);
-            ctx.fillStyle = lanternOut ? "#5a4326" : "#ffe9c2";
-            ctx.font = "600 " + Math.round(unit * 0.026) + "px Georgia, serif";
-            ctx.fillText(lanternOut ? "stow" : "light", stow.x, stow.y + stow.r * 1.5);
+            if (oil <= 0) {
+                ctx.fillStyle = "rgba(224,90,58,0.95)";
+                ctx.font = "600 " + Math.round(unit * 0.03) + "px Georgia, serif";
+                ctx.textAlign = "center";
+                ctx.fillText("out of oil!", W / 2, H - unit * 0.05);
+            }
         }
 
         function drawHUDDay() {
@@ -1015,17 +927,12 @@
             const r = canvas.getBoundingClientRect();
             return { x: clientX - r.left, y: clientY - r.top };
         }
-        function inStow(x, y) { return Math.hypot(x - stow.x, y - stow.y) <= stow.r * 1.25; }
-
         function onDown(x, y) {
             if (!alive) return;
             if (phase === "overlap") { continueOverlap(); return; }
             if (phase === "day") { onDownDay(x, y); return; }
-            if (inStow(x, y)) { toggleLantern(); return; }
-            for (let i = 0; i < torches.length; i++) {
-                if (Math.hypot(x - torches[i].x, y - (wallY - unit * 0.02)) <= unit * 0.07) { toggleTorch(i); return; }
-            }
-            dragging = true; started = true; targetX = clampX(x);
+            // Night: light + aim the beam.
+            pointerDown = true; started = true; aimBeam(x);
         }
         function onDownDay(x, y) {
             for (const d of disturbances) {
@@ -1034,8 +941,11 @@
             if (Math.hypot(x - oilBarrel.x, y - (wallY - unit * 0.04)) <= unit * 0.08) { errand = { kind: "oil" }; targetX = clampX(oilBarrel.x); return; }
             errand = null; dragging = true; targetX = clampX(x);
         }
-        function onMove(x) { if (dragging) { targetX = clampX(x); errand = null; } }
-        function onUp() { dragging = false; }
+        function onMove(x) {
+            if (phase === "night") { if (pointerDown) aimBeam(x); return; }
+            if (dragging) { targetX = clampX(x); errand = null; }
+        }
+        function onUp() { dragging = false; pointerDown = false; }
 
         // A touch fires touchstart AND a synthesized mousedown ~300ms later; without
         // this guard the second one re-toggles the lantern/torch, cancelling the first.
@@ -1051,7 +961,6 @@
             else if (e.key === "ArrowRight" || e.key === "d") { keys.right = true; started = true; e.preventDefault(); }
             else if (e.key === " " || e.key === "ArrowUp" || e.key === "Enter") {
                 if (phase === "overlap") continueOverlap();
-                else if (phase === "night") toggleLantern();
                 e.preventDefault();
             }
         }
