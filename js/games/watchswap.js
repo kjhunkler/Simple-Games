@@ -30,7 +30,7 @@
         let bushes, wolves, hearts, score, night;
         let beamActive, beamAngle, beamTargetAngle, pointerDown, started, alive, paused;
         let spawnTimer, spawnInterval, wolfTravel, nightT;
-        let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul;
+        let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul, beamPowerMul;
         let disturbances, distSpawnTimer, distInterval, errand;
         let owlSleepX, flash;
         let overlapKind, overlapNext, overlapT;
@@ -81,6 +81,7 @@
             owlRested = true;
             beamHalfMul = 1;
             beamRangeMul = 1;
+            beamPowerMul = 1;
             disturbances = [];
             errand = null;
             flash = 0;
@@ -130,6 +131,7 @@
             wolves = [];
             beamHalfMul = owlRested ? 1 : 0.62;
             beamRangeMul = owlRested ? 1 : 0.68;
+            beamPowerMul = owlRested ? 1 : 0.5;   // a weak beam wears wolves down slowly
             if (owlRested) { score += 3; host.setScore(score); }   // quiet-day bonus
             ox = W / 2; targetX = ox; facing = 1;
             beamActive = false; beamAngle = 0; beamTargetAngle = 0; pointerDown = false;
@@ -289,12 +291,12 @@
                 const speed = v * (w.stalker ? 1.45 : 1);
 
                 if (w.state === "lurk") {
-                    if (isLit(w)) { w.hp -= LIGHT_DPS * dt; if (w.hp <= 0) scare(w); }
+                    if (isLit(w)) { w.hp -= LIGHT_DPS * beamPowerMul * dt; if (w.hp <= 0) scare(w); }
                     else { w.wait -= dt; if (w.wait <= 0) w.state = "creep"; }
                 } else if (w.state === "creep") {
                     if (isLit(w)) {
-                        // Light holds the wolf at bay and slowly wears it down.
-                        w.hp -= LIGHT_DPS * dt;
+                        // Light holds the wolf at bay and wears it down (slower if the beam is weak).
+                        w.hp -= LIGHT_DPS * beamPowerMul * dt;
                         if (w.hp <= 0) scare(w);
                     } else {
                         // Advance toward the gate at the centre of the wall.
@@ -616,7 +618,7 @@
                 ctx.fillStyle = "rgba(255,184,120,0.95)";
                 ctx.font = "500 " + Math.round(unit * 0.026) + "px Georgia, serif";
                 ctx.textAlign = "center";
-                ctx.fillText("tired owl · dim beam", W / 2, unit * 0.165);
+                ctx.fillText("tired owl · weak beam", W / 2, unit * 0.165);
             }
         }
 
