@@ -1,5 +1,5 @@
 /* ============ Simple Games — service worker ============ */
-const CACHE_NAME = "simple-games-v43";
+const CACHE_NAME = "simple-games-v44";
 
 const ASSETS = [
     "./",

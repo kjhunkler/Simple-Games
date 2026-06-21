@@ -24,6 +24,7 @@
         const DAY_MS = kids ? 32000 : 36000;
         const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
         const NOISE_MAX = 100;
+        const OVERLAP_AUTO = 7;                // seconds before a hand-off auto-continues
 
         let W, H, unit, wallY, fieldTop, lanternY, ox, targetX, facing;
         let bushes, wolves, torches, oil, hearts, score, night;
@@ -32,6 +33,7 @@
         let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul;
         let disturbances, distSpawnTimer, distInterval, errand;
         let owlSleepX, oilBarrel, flash;
+        let overlapKind, overlapNext, overlapT;
         let rafId, lastTs;
         let dragging = false;
         const keys = { left: false, right: false };
@@ -98,6 +100,8 @@
             disturbances = [];
             errand = null;
             flash = 0;
+            overlapNext = null;
+            overlapT = 0;
             applyNight();
             spawnTimer = spawnInterval * 0.6;
             lastTs = 0;
@@ -256,7 +260,35 @@
         function update(dt) {
             if (flash > 0) flash = Math.max(0, flash - dt);
             if (phase === "night") updateNight(dt);
-            else updateDay(dt);
+            else if (phase === "day") updateDay(dt);
+            else updateOverlap(dt);
+        }
+
+        // The shared dawn/dusk hand-off — a cozy beat in the tower.
+        function enterOverlap(kind, nextFn) {
+            phase = "overlap";
+            overlapKind = kind;
+            overlapNext = nextFn;
+            overlapT = 0;
+            errand = null; dragging = false;
+            if (kind === "dawn") {
+                if (hearts < START_HEARTS) hearts += 1;       // a good night's rest
+                oil = Math.min(OIL_MAX, oil + 30);            // breakfast tops up the oil
+            }
+            flash = 0.5;
+            host.vibrate(20);
+            SGSound.play("match");
+        }
+
+        function updateOverlap(dt) {
+            overlapT += dt;
+            if (overlapT >= OVERLAP_AUTO) continueOverlap();
+        }
+
+        function continueOverlap() {
+            const fn = overlapNext;
+            overlapNext = null;
+            if (fn) fn();
         }
 
         function moveGuard(speedFrac, dt) {
@@ -276,7 +308,7 @@
             if (!started) return;
 
             nightT += dt;
-            if (nightT >= NIGHT_MS / 1000) { enterDay(); return; }
+            if (nightT >= NIGHT_MS / 1000) { enterOverlap("dawn", enterDay); return; }
 
             // Lit torches burn oil; when it runs dry they gutter out.
             let litCount = 0;
@@ -321,7 +353,7 @@
             moveGuard(DAY_SPEED, dt);
 
             dayT += dt;
-            if (dayT >= DAY_MS / 1000) { enterNight(); return; }
+            if (dayT >= DAY_MS / 1000) { enterOverlap("dusk", enterNight); return; }
 
             // Walk an errand to its target, then act on arrival.
             if (errand) {
@@ -367,7 +399,8 @@
         /* ---------- Drawing ---------- */
         function draw() {
             if (phase === "night") drawNight();
-            else drawDay();
+            else if (phase === "day") drawDay();
+            else drawOverlap();
             if (flash > 0) {
                 ctx.fillStyle = "rgba(255,247,235," + (flash * 0.5) + ")";
                 ctx.fillRect(0, 0, W, H);
@@ -802,6 +835,101 @@
             ctx.fillStyle = "#e0922e"; ctx.beginPath(); ctx.arc(x, y - h * 0.5, w * 0.16, 0, 6.28); ctx.fill();
         }
 
+        /* ---------- Overlap (tower hand-off) ---------- */
+        function drawOverlap() {
+            const floorY = H * 0.76;
+            let g = ctx.createLinearGradient(0, 0, 0, floorY);
+            g.addColorStop(0, "#e0bd8a"); g.addColorStop(1, "#cda572");
+            ctx.fillStyle = g; ctx.fillRect(0, 0, W, floorY);
+            ctx.fillStyle = "#8a5e34"; ctx.fillRect(0, floorY, W, H - floorY);
+            ctx.strokeStyle = "rgba(110,74,42,0.6)"; ctx.lineWidth = unit * 0.004;
+            for (let x = 0; x < W; x += unit * 0.12) { ctx.beginPath(); ctx.moveTo(x, floorY); ctx.lineTo(x, H); ctx.stroke(); }
+
+            // window showing the time of day outside
+            const wx = W * 0.5, wy = H * 0.13, ww = unit * 0.17, wh = unit * 0.2;
+            ctx.fillStyle = "#b8966a"; roundRectFill(wx - ww / 2 - unit * 0.012, wy - unit * 0.012, ww + unit * 0.024, wh + unit * 0.024, unit * 0.01);
+            if (overlapKind === "dawn") { g = ctx.createLinearGradient(0, wy, 0, wy + wh); g.addColorStop(0, "#f6c87a"); g.addColorStop(1, "#f0a0a8"); }
+            else { g = ctx.createLinearGradient(0, wy, 0, wy + wh); g.addColorStop(0, "#5b5a8c"); g.addColorStop(1, "#e89a5c"); }
+            ctx.fillStyle = g; roundRectFill(wx - ww / 2, wy, ww, wh, unit * 0.008);
+            ctx.fillStyle = overlapKind === "dawn" ? "#fff0c0" : "#eef0ff";
+            ctx.beginPath(); ctx.arc(wx, wy + wh * 0.42, unit * 0.028, 0, 6.28); ctx.fill();
+
+            drawBunting(H * 0.07);
+
+            // breakfast table
+            const tx = W * 0.5, tTop = floorY - unit * 0.02;
+            ctx.fillStyle = "#7a5230"; ctx.fillRect(tx - unit * 0.16, tTop - unit * 0.022, unit * 0.32, unit * 0.03);
+            ctx.fillRect(tx - unit * 0.14, tTop, unit * 0.025, unit * 0.08);
+            ctx.fillRect(tx + unit * 0.115, tTop, unit * 0.025, unit * 0.08);
+            for (let i = 0; i < 3; i++) { ctx.fillStyle = "#e9b96a"; ctx.beginPath(); ctx.ellipse(tx - unit * 0.06, tTop - unit * 0.035 - i * unit * 0.017, unit * 0.05, unit * 0.013, 0, 0, 6.28); ctx.fill(); }
+            ctx.fillStyle = "#a85a2a"; ctx.beginPath(); ctx.ellipse(tx - unit * 0.06, tTop - unit * 0.035 - 2 * unit * 0.017, unit * 0.05, unit * 0.013, 0, 0, 3.14); ctx.fill();
+            ctx.fillStyle = "#5a4632"; ctx.fillRect(tx + unit * 0.05, tTop - unit * 0.052, unit * 0.042, unit * 0.046);
+            ctx.fillStyle = "#e6dcc0"; ctx.fillRect(tx + unit * 0.005, tTop - unit * 0.064, unit * 0.012, unit * 0.044);
+            ctx.fillStyle = "#ffce6a"; ctx.beginPath(); ctx.arc(tx + unit * 0.011, tTop - unit * 0.07, unit * 0.01, 0, 6.28); ctx.fill();
+
+            drawCozyOwl(W * 0.28, floorY - unit * 0.01);
+            drawCozyBird(W * 0.72, floorY - unit * 0.01);
+
+            ctx.textAlign = "center";
+            ctx.fillStyle = "rgba(50,40,28,0.95)";
+            ctx.font = "600 " + Math.round(unit * 0.055) + "px Georgia, serif";
+            ctx.fillText(overlapKind === "dawn" ? "Breakfast!" : "Changing of the watch", W / 2, H * 0.34);
+            ctx.font = "500 " + Math.round(unit * 0.034) + "px Georgia, serif";
+            ctx.fillStyle = "rgba(60,48,32,0.9)";
+            ctx.fillText(overlapKind === "dawn"
+                ? "The night is won — heart restored, oil topped up."
+                : "The Bird turns in; the Owl takes the wall.", W / 2, H * 0.41);
+
+            const pulse = 0.55 + 0.35 * Math.sin(Date.now() / 320);
+            ctx.fillStyle = "rgba(50,40,28," + pulse + ")";
+            ctx.font = "600 " + Math.round(unit * 0.04) + "px Georgia, serif";
+            ctx.fillText("tap to take the " + (overlapKind === "dawn" ? "day" : "night") + " watch", W / 2, H * 0.88);
+        }
+
+        function drawBunting(y) {
+            ctx.strokeStyle = "#9a7a48"; ctx.lineWidth = unit * 0.004;
+            ctx.beginPath(); ctx.moveTo(W * 0.1, y); ctx.quadraticCurveTo(W * 0.5, y + unit * 0.03, W * 0.9, y); ctx.stroke();
+            const cols = ["#e0a24a", "#7488ae", "#c47a84"];
+            for (let i = 0; i < 7; i++) {
+                const x = W * (0.14 + i * 0.12), yy = y + Math.sin(i / 6 * Math.PI) * unit * 0.022;
+                ctx.fillStyle = cols[i % 3];
+                ctx.beginPath(); ctx.moveTo(x - unit * 0.018, yy); ctx.lineTo(x + unit * 0.018, yy); ctx.lineTo(x, yy + unit * 0.03); ctx.fill();
+            }
+        }
+
+        function drawCozyOwl(x, baseY) {
+            const h = unit * 0.16, bodyH = h * 0.7, bodyCy = baseY - bodyH * 0.5, headR = h * 0.38, headCy = bodyCy - bodyH * 0.5;
+            ctx.fillStyle = "#8a92a0"; ctx.beginPath(); ctx.ellipse(x, bodyCy, h * 0.46, bodyH * 0.6, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#8a6840"; ctx.beginPath(); ctx.arc(x, headCy, headR, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#6a6aa8"; ctx.beginPath();
+            ctx.moveTo(x - headR * 0.95, headCy - headR * 0.1);
+            ctx.quadraticCurveTo(x - headR * 0.2, headCy - headR * 1.7, x + headR * 1.2, headCy - headR * 1.2);
+            ctx.quadraticCurveTo(x + headR * 0.2, headCy - headR * 0.55, x + headR * 0.95, headCy - headR * 0.1);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = "#ececf8"; ctx.beginPath(); ctx.arc(x + headR * 1.2, headCy - headR * 1.2, headR * 0.2, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#dcc99e"; ctx.beginPath(); ctx.ellipse(x, headCy + headR * 0.15, headR * 0.7, headR * 0.6, 0, 0, 6.28); ctx.fill();
+            for (const sd of [-1, 1]) {
+                ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x + sd * headR * 0.3, headCy + headR * 0.1, headR * 0.22, 0, 6.28); ctx.fill();
+                ctx.fillStyle = "#20140a"; ctx.beginPath(); ctx.arc(x + sd * headR * 0.3, headCy + headR * 0.1, headR * 0.1, 0, 6.28); ctx.fill();
+            }
+            ctx.fillStyle = "#d98a34"; ctx.beginPath();
+            ctx.moveTo(x - headR * 0.1, headCy + headR * 0.35); ctx.lineTo(x + headR * 0.1, headCy + headR * 0.35); ctx.lineTo(x, headCy + headR * 0.55); ctx.fill();
+            ctx.fillStyle = "#5a4632"; ctx.fillRect(x + h * 0.34, bodyCy - h * 0.02, h * 0.14, h * 0.17);
+        }
+
+        function drawCozyBird(x, baseY) {
+            const s = unit * 0.11, cy = baseY - s * 0.55;
+            ctx.fillStyle = "#7c5230"; ctx.beginPath(); ctx.ellipse(x, cy, s * 0.42, s * 0.5, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#db7f37"; ctx.beginPath(); ctx.ellipse(x, cy + s * 0.08, s * 0.28, s * 0.36, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#7c5230"; ctx.beginPath(); ctx.arc(x, cy - s * 0.5, s * 0.32, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#5a7a44"; ctx.beginPath(); ctx.arc(x, cy - s * 0.55, s * 0.34, Math.PI, 0); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(x + s * 0.2, cy - s * 0.8); ctx.quadraticCurveTo(x + s * 0.5, cy - s * 0.7, x + s * 0.4, cy - s * 0.5); ctx.fill();
+            ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x + s * 0.12, cy - s * 0.5, s * 0.08, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#20140a"; ctx.beginPath(); ctx.arc(x + s * 0.14, cy - s * 0.5, s * 0.04, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#e09a33"; ctx.beginPath();
+            ctx.moveTo(x + s * 0.3, cy - s * 0.46); ctx.lineTo(x + s * 0.5, cy - s * 0.42); ctx.lineTo(x + s * 0.3, cy - s * 0.36); ctx.fill();
+        }
+
         function drawRotateHint() {
             ctx.fillStyle = "#13153a"; ctx.fillRect(0, 0, W, H);
             ctx.fillStyle = "#f2f3ff"; ctx.textAlign = "center";
@@ -844,6 +972,7 @@
 
         function onDown(x, y) {
             if (!alive) return;
+            if (phase === "overlap") { continueOverlap(); return; }
             if (phase === "day") { onDownDay(x, y); return; }
             if (inStow(x, y)) { toggleLantern(); return; }
             for (let i = 0; i < torches.length; i++) {
@@ -870,7 +999,11 @@
         function onKey(e) {
             if (e.key === "ArrowLeft" || e.key === "a") { keys.left = true; started = true; e.preventDefault(); }
             else if (e.key === "ArrowRight" || e.key === "d") { keys.right = true; started = true; e.preventDefault(); }
-            else if (e.key === " " || e.key === "ArrowUp") { if (phase === "night") toggleLantern(); e.preventDefault(); }
+            else if (e.key === " " || e.key === "ArrowUp" || e.key === "Enter") {
+                if (phase === "overlap") continueOverlap();
+                else if (phase === "night") toggleLantern();
+                e.preventDefault();
+            }
         }
         function onKeyUp(e) {
             if (e.key === "ArrowLeft" || e.key === "a") keys.left = false;
