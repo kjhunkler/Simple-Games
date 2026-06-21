@@ -25,7 +25,9 @@
         const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
         const NOISE_MAX = 100;
         const OVERLAP_AUTO = 7;                // seconds before a hand-off auto-continues
-        const MARAUDER_TRAVEL = kids ? 8 : 5.5;   // seconds field→wall for a day wolf
+        const WOLF_HP = kids ? 0.8 : 1.0;      // seconds of sustained light to drive a wolf off
+        const STALKER_HP = kids ? 1.2 : 1.6;   // stalkers take longer to wear down
+        const LIGHT_DPS = 1.0;                 // light drains this much wolf health per second
 
         let W, H, unit, wallY, fieldTop, lanternY, ox, targetX, facing;
         let bushes, wolves, torches, oil, hearts, score, night;
@@ -33,7 +35,6 @@
         let spawnTimer, spawnInterval, wolfTravel, nightT;
         let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul;
         let disturbances, distSpawnTimer, distInterval, errand;
-        let marauders, marauderTimer, marauderInterval;
         let owlSleepX, oilBarrel, flash;
         let overlapKind, overlapNext, overlapT;
         let rafId, lastTs;
@@ -100,7 +101,6 @@
             beamHalfMul = 1;
             beamRangeMul = 1;
             disturbances = [];
-            marauders = [];
             errand = null;
             flash = 0;
             overlapNext = null;
@@ -119,7 +119,6 @@
         }
         function applyDay() {
             distInterval = Math.max(kids ? 2.4 : 1.7, (kids ? 3.8 : 2.9) - (night - 1) * 0.18);
-            marauderInterval = Math.max(kids ? 9 : 6, (kids ? 15 : 11) - (night - 1) * 0.5);
         }
 
         // Dawn: the night is survived — hand off to the Early Bird's day watch.
@@ -132,12 +131,10 @@
             noise = 0;
             owlRested = true;
             disturbances = [];
-            marauders = [];
             errand = null;
             ox = W / 2; targetX = ox; facing = 1;
             applyDay();
             distSpawnTimer = distInterval * 0.5;
-            marauderTimer = marauderInterval * 0.8;
             flash = 0.5;
             host.vibrate([20, 40, 20]);
             SGSound.play("score");
@@ -150,7 +147,6 @@
             applyNight();
             nightT = 0;
             wolves = [];
-            marauders = [];
             for (const t of torches) t.lit = false;
             beamHalfMul = owlRested ? 1 : 0.62;
             beamRangeMul = owlRested ? 1 : 0.68;
@@ -166,12 +162,22 @@
 
         function spawnDisturbance() {
             const types = ["bell", "rooster", "chatter"];
+            const type = types[Math.floor(Math.random() * types.length)];
             disturbances.push({
                 x: W * (0.34 + Math.random() * 0.58),   // keep clear of the sleeping owl
-                type: types[Math.floor(Math.random() * types.length)],
+                type: type,
                 rate: (kids ? 5 : 8) + (night - 1) * 0.6,
-                shake: Math.random() * 6.28
+                shake: Math.random() * 6.28,
+                sndT: 0.9 + Math.random() * 0.5
             });
+            playNoise(type);
+        }
+
+        // Each noisy item has its own racket, repeated while it's left unhushed.
+        function playNoise(type) {
+            if (type === "bell") SGSound.play("note3");
+            else if (type === "rooster") SGSound.play("note0");
+            else SGSound.play("flip");
         }
 
         function hush(d) {
@@ -179,21 +185,7 @@
             if (idx >= 0) disturbances.splice(idx, 1);
             noise = Math.max(0, noise - 6);
             host.vibrate(8);
-            SGSound.play("flip");
-        }
-
-        function spawnMarauder() {
-            marauders.push({ x: W * (0.2 + Math.random() * 0.6), y: fieldTop, wob: Math.random() * 6.28 });
-        }
-
-        // Shooing a day wolf works, but the squawking is noisy.
-        function shooMarauder(m) {
-            const idx = marauders.indexOf(m);
-            if (idx >= 0) marauders.splice(idx, 1);
-            noise = Math.min(NOISE_MAX, noise + 10);
-            host.vibrate(10);
-            SGSound.play("flap");
-            if (noise >= NOISE_MAX && owlRested) wakeOwl();
+            SGSound.play("eat");
         }
 
         function refillOil() {
@@ -206,7 +198,6 @@
 
         function doErrand() {
             if (errand.kind === "oil") refillOil();
-            else if (errand.kind === "wolf") { if (marauders.indexOf(errand.ref) >= 0) shooMarauder(errand.ref); }
             else hush(errand.ref);
             errand = null;
         }
@@ -222,12 +213,15 @@
             const b = bushes[Math.floor(Math.random() * bushes.length)];
             // Stalkers show up from night 2 on — faster, darker, exploit dark gaps.
             const stalker = night >= 2 && Math.random() < Math.min(0.45, 0.12 + (night - 2) * 0.08);
+            const hp = stalker ? STALKER_HP : WOLF_HP;
             wolves.push({
                 x: b.x + (Math.random() - 0.5) * unit * 0.06,
                 y: b.y,
                 wait: (stalker ? 0.3 : 0.5) + Math.random() * 0.8,   // lurk in the bush first
                 state: "lurk",                      // lurk → creep → flee
                 stalker: stalker,
+                hp: hp,
+                maxHp: hp,
                 wob: Math.random() * 6.28
             });
         }
@@ -354,15 +348,16 @@
                 const fall = baseFall * (w.stalker ? 1.45 : 1);
 
                 if (w.state === "lurk") {
-                    w.wait -= dt;
-                    if (isLit(w)) { scare(w); }
-                    else if (w.wait <= 0) w.state = "creep";
+                    if (isLit(w)) { w.hp -= LIGHT_DPS * dt; if (w.hp <= 0) scare(w); }
+                    else { w.wait -= dt; if (w.wait <= 0) w.state = "creep"; }
                 } else if (w.state === "creep") {
-                    w.y += fall * dt;
-                    if (isLit(w)) scare(w);
-                    else if (w.y >= wallY - unit * 0.04) {  // reached the wall
-                        breach();
-                        wolves.splice(i, 1);
+                    if (isLit(w)) {
+                        // Light holds the wolf at bay and slowly wears it down.
+                        w.hp -= LIGHT_DPS * dt;
+                        if (w.hp <= 0) scare(w);
+                    } else {
+                        w.y += fall * dt;
+                        if (w.y >= wallY - unit * 0.04) { breach(); wolves.splice(i, 1); }
                     }
                 } else if (w.state === "flee") {
                     w.y -= fall * 2.2 * dt;
@@ -377,12 +372,10 @@
             dayT += dt;
             if (dayT >= DAY_MS / 1000) { enterOverlap("dusk", enterNight); return; }
 
-            // Walk an errand to its target, then act on arrival. The target may
-            // be a moving day wolf, so re-read its position each frame.
+            // Walk an errand to its target, then act on arrival.
             if (errand) {
                 const tx = errand.kind === "oil" ? oilBarrel.x : errand.ref.x;
-                if (errand.kind === "wolf" && marauders.indexOf(errand.ref) < 0) errand = null;
-                else if (Math.abs(ox - tx) < unit * 0.12) doErrand();
+                if (Math.abs(ox - tx) < unit * 0.12) doErrand();
             }
 
             // Spawn disturbances.
@@ -392,29 +385,14 @@
                 if (disturbances.length < 5) spawnDisturbance();
             }
 
-            // Spawn the occasional bold Noon Marauder.
-            marauderTimer -= dt;
-            if (marauderTimer <= 0) {
-                marauderTimer = marauderInterval * (0.7 + Math.random() * 0.6);
-                if (marauders.length < 3) spawnMarauder();
-            }
-            const mFall = (wallY - fieldTop) / MARAUDER_TRAVEL;
-            for (let i = marauders.length - 1; i >= 0; i--) {
-                const m = marauders[i];
-                m.wob += dt * 5;
-                m.y += mFall * dt;
-                if (m.y >= wallY - unit * 0.04) {   // reached the wall — a big racket
-                    marauders.splice(i, 1);
-                    noise = Math.min(NOISE_MAX, noise + 25);
-                    flash = 0.4;
-                    host.vibrate([40, 30, 40]);
-                    SGSound.play("wrong");
-                }
-            }
-
-            // Active disturbances pump the noise up; quiet lets it settle.
+            // Active disturbances pump the noise up — and keep making a racket.
             let rate = 0;
-            for (const d of disturbances) { d.shake += dt * 16; rate += d.rate; }
+            for (const d of disturbances) {
+                d.shake += dt * 16;
+                rate += d.rate;
+                d.sndT -= dt;
+                if (d.sndT <= 0) { d.sndT = 1.0 + Math.random() * 0.5; playNoise(d.type); }
+            }
             if (rate > 0) noise = Math.min(NOISE_MAX, noise + rate * dt);
             else noise = Math.max(0, noise - dt * 4);
             if (noise >= NOISE_MAX && owlRested) wakeOwl();
@@ -474,6 +452,7 @@
             // Lurking wolves' eyes shine from the bushes; creeping ones in the open.
             for (const w of wolves) if (w.state !== "lurk") drawWolf(w);
             for (const w of wolves) if (w.state === "lurk") drawEyes(w.x, w.y, !w.stalker);
+            for (const w of wolves) if (w.state !== "flee" && w.hp < w.maxHp) drawWolfHealth(w);
 
             drawTorchCones();
             if (lanternOut) drawBeam();
@@ -552,6 +531,15 @@
             ctx.beginPath(); ctx.moveTo(-s * 0.65, -s * 0.35); ctx.lineTo(-s * 0.55, -s * 0.55); ctx.lineTo(-s * 0.45, -s * 0.3); ctx.fill();
             ctx.restore();
             drawEyes(w.x - s * 0.55, w.y - s * 0.12 + bob, !w.stalker);
+        }
+
+        function drawWolfHealth(w) {
+            const s = unit * (w.stalker ? 0.042 : 0.05);
+            const bw = s * 1.7, bh = unit * 0.011, bx = w.x - bw / 2, by = w.y - s * 1.05;
+            ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+            const r = Math.max(0, w.hp / w.maxHp);
+            ctx.fillStyle = r > 0.5 ? "#7cd86a" : (r > 0.25 ? "#e8b84a" : "#e0503a");
+            ctx.fillRect(bx, by, bw * r, bh);
         }
 
         function drawBeam() {
@@ -789,7 +777,6 @@
             ctx.fillStyle = grass; ctx.fillRect(0, fieldTop, W, wallY - fieldTop);
             for (const b of bushes) drawBush(b.x, b.y);
 
-            for (const m of marauders) drawMarauder(m);
             drawSleepingOwl(owlSleepX);
             drawBird(ox);
             drawWall();
@@ -893,22 +880,6 @@
             ctx.moveTo(x - w / 2, y - h * 0.66); ctx.lineTo(x + w / 2, y - h * 0.66);
             ctx.moveTo(x - w / 2, y - h * 0.33); ctx.lineTo(x + w / 2, y - h * 0.33); ctx.stroke();
             ctx.fillStyle = "#e0922e"; ctx.beginPath(); ctx.arc(x, y - h * 0.5, w * 0.16, 0, 6.28); ctx.fill();
-        }
-
-        function drawMarauder(m) {
-            const s = unit * 0.055, bob = Math.sin(m.wob) * s * 0.08;
-            ctx.save(); ctx.translate(m.x, m.y + bob);
-            ctx.fillStyle = "#5a5a64";
-            ctx.beginPath(); ctx.ellipse(0, s * 0.2, s * 0.72, s * 0.38, 0, 0, 6.28); ctx.fill();
-            ctx.fillStyle = "#46464e";
-            for (const lx of [-0.45, -0.15, 0.15, 0.45]) ctx.fillRect(lx * s - s * 0.05, s * 0.42, s * 0.1, s * 0.36);
-            ctx.fillStyle = "#5a5a64";
-            ctx.beginPath(); ctx.arc(-s * 0.6, -s * 0.05, s * 0.32, 0, 6.28); ctx.fill();
-            ctx.beginPath(); ctx.moveTo(-s * 0.85, 0); ctx.lineTo(-s * 1.2, s * 0.12); ctx.lineTo(-s * 0.82, s * 0.22); ctx.fill();
-            ctx.beginPath(); ctx.moveTo(-s * 0.72, -s * 0.32); ctx.lineTo(-s * 0.6, -s * 0.55); ctx.lineTo(-s * 0.5, -s * 0.28); ctx.fill();
-            ctx.fillStyle = "#1a1206";
-            ctx.beginPath(); ctx.arc(-s * 0.62, -s * 0.08, s * 0.06, 0, 6.28); ctx.fill();
-            ctx.restore();
         }
 
         /* ---------- Overlap (tower hand-off) ---------- */
@@ -1057,9 +1028,6 @@
             dragging = true; started = true; targetX = clampX(x);
         }
         function onDownDay(x, y) {
-            for (const m of marauders) {
-                if (Math.hypot(x - m.x, y - m.y) <= unit * 0.09) { errand = { kind: "wolf", ref: m }; targetX = clampX(m.x); return; }
-            }
             for (const d of disturbances) {
                 if (Math.hypot(x - d.x, y - (wallY - unit * 0.03)) <= unit * 0.08) { errand = { kind: "hush", ref: d }; targetX = clampX(d.x); return; }
             }
@@ -1069,12 +1037,15 @@
         function onMove(x) { if (dragging) { targetX = clampX(x); errand = null; } }
         function onUp() { dragging = false; }
 
-        function onTouchStart(e) { const t = e.changedTouches[0]; const p = localPoint(t.clientX, t.clientY); onDown(p.x, p.y); }
-        function onTouchMove(e) { e.preventDefault(); const t = e.changedTouches[0]; const p = localPoint(t.clientX, t.clientY); onMove(p.x); }
-        function onTouchEnd() { onUp(); }
-        function onMouseDown(e) { const p = localPoint(e.clientX, e.clientY); onDown(p.x, p.y); }
-        function onMouseMove(e) { const p = localPoint(e.clientX, e.clientY); onMove(p.x); }
-        function onMouseUp() { onUp(); }
+        // A touch fires touchstart AND a synthesized mousedown ~300ms later; without
+        // this guard the second one re-toggles the lantern/torch, cancelling the first.
+        let lastTouch = 0;
+        function onTouchStart(e) { lastTouch = Date.now(); const t = e.changedTouches[0]; const p = localPoint(t.clientX, t.clientY); onDown(p.x, p.y); }
+        function onTouchMove(e) { e.preventDefault(); lastTouch = Date.now(); const t = e.changedTouches[0]; const p = localPoint(t.clientX, t.clientY); onMove(p.x); }
+        function onTouchEnd() { lastTouch = Date.now(); onUp(); }
+        function onMouseDown(e) { if (Date.now() - lastTouch < 700) return; const p = localPoint(e.clientX, e.clientY); onDown(p.x, p.y); }
+        function onMouseMove(e) { if (Date.now() - lastTouch < 700) return; const p = localPoint(e.clientX, e.clientY); onMove(p.x); }
+        function onMouseUp(e) { if (Date.now() - lastTouch < 700) return; onUp(); }
         function onKey(e) {
             if (e.key === "ArrowLeft" || e.key === "a") { keys.left = true; started = true; e.preventDefault(); }
             else if (e.key === "ArrowRight" || e.key === "d") { keys.right = true; started = true; e.preventDefault(); }
