@@ -1,0 +1,515 @@
+/* ============ Watch Swap — guard the wall (night core) ============ */
+/* Phase 0+1: landscape lock + the Knight Owl's night watch.
+   Patrol the wall, shine the lantern to scare wolves back into the trees,
+   or stow it to dash. Survive each night; the dial fills to dawn.        */
+(function () {
+    "use strict";
+
+    function create(host) {
+        const canvas = host.canvas;
+        const ctx = canvas.getContext("2d");
+        const kids = !!host.kids;
+
+        // --- Tunables (kids mode is gentler) ---
+        const START_HEARTS = kids ? 5 : 3;
+        const NIGHT_MS = kids ? 40000 : 46000;
+        const SLOW_FRAC = 0.30;            // patrol speed, lantern out (×W / sec)
+        const FAST_FRAC = 0.66;            // dash speed, lantern stowed
+        const BEAM_HALF = 0.40;            // beam cone half-angle (radians)
+        const BUSH_COUNT = 6;
+
+        let W, H, unit, wallY, fieldTop, lanternY, ox, targetX, facing;
+        let bushes, wolves, hearts, score, night;
+        let lanternOut, started, alive, paused;
+        let spawnTimer, spawnInterval, wolfTravel, nightT;
+        let rafId, lastTs;
+        let dragging = false;
+        const keys = { left: false, right: false };
+        let stow = { x: 0, y: 0, r: 0 };
+
+        function resize() {
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            W = canvas.clientWidth;
+            H = canvas.clientHeight;
+            canvas.width = W * dpr;
+            canvas.height = H * dpr;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            unit = Math.min(W, H);
+            wallY = H * 0.82;
+            fieldTop = H * 0.30;
+            lanternY = wallY - unit * 0.14;
+            const r = unit * 0.085;
+            stow = { x: W - r - unit * 0.05, y: H - r - unit * 0.05, r: r };
+            layoutBushes();
+        }
+
+        function layoutBushes() {
+            bushes = [];
+            for (let i = 0; i < BUSH_COUNT; i++) {
+                const t = (i + 0.5) / BUSH_COUNT;
+                bushes.push({ x: W * (0.08 + t * 0.84), y: fieldTop + Math.sin(i * 1.7) * (unit * 0.02) });
+            }
+        }
+
+        function reset() {
+            ox = W / 2;
+            targetX = ox;
+            facing = 1;
+            wolves = [];
+            hearts = START_HEARTS;
+            score = 0;
+            night = 1;
+            lanternOut = true;
+            started = false;
+            alive = true;
+            paused = false;
+            nightT = 0;
+            applyNight();
+            spawnTimer = spawnInterval * 0.6;
+            lastTs = 0;
+            host.setScore(0);
+        }
+
+        // Difficulty scales gently with each night survived.
+        function applyNight() {
+            const n = night - 1;
+            spawnInterval = Math.max(kids ? 1.5 : 1.0, (kids ? 3.2 : 2.3) - n * 0.22);
+            wolfTravel = Math.max(kids ? 6.5 : 4.4, (kids ? 9.5 : 7.2) - n * 0.45); // seconds tree→wall
+        }
+
+        function spawnWolf() {
+            const b = bushes[Math.floor(Math.random() * bushes.length)];
+            wolves.push({
+                x: b.x + (Math.random() - 0.5) * unit * 0.06,
+                y: b.y,
+                wait: 0.5 + Math.random() * 0.8,   // lurk in the bush first
+                state: "lurk",                      // lurk → creep → flee
+                wob: Math.random() * 6.28
+            });
+        }
+
+        function toggleLantern() {
+            lanternOut = !lanternOut;
+            started = true;
+            host.vibrate(8);
+            SGSound.play(lanternOut ? "flip" : "tap");
+        }
+
+        /* ---------- Geometry ---------- */
+        function clampX(x) { return Math.max(W * 0.06, Math.min(W * 0.94, x)); }
+
+        // Is the wolf inside the lit cone projecting up from the lantern?
+        function inBeam(w) {
+            if (!lanternOut) return false;
+            const dx = w.x - ox;
+            const dy = lanternY - w.y;            // positive = above the owl
+            if (dy <= 0) return false;
+            const dist = Math.hypot(dx, dy);
+            if (dist > unit * 1.5) return false;
+            const ang = Math.atan2(Math.abs(dx), dy); // 0 = straight up
+            return ang < BEAM_HALF;
+        }
+
+        /* ---------- Update ---------- */
+        function update(dt) {
+            // Move the owl toward the target.
+            const speed = (lanternOut ? SLOW_FRAC : FAST_FRAC) * W;
+            if (keys.left) targetX = W * 0.06;
+            else if (keys.right) targetX = W * 0.94;
+            const dx = targetX - ox;
+            if (Math.abs(dx) > 1) {
+                const move = Math.sign(dx) * Math.min(Math.abs(dx), speed * dt);
+                ox += move;
+                facing = Math.sign(dx);
+            }
+
+            if (!started) return;
+
+            // Advance the night clock.
+            nightT += dt;
+            if (nightT >= NIGHT_MS / 1000) {
+                night += 1;
+                nightT = 0;
+                score += 5;                       // survived-the-night bonus
+                host.setScore(score);
+                host.vibrate([20, 40, 20]);
+                SGSound.play("score");
+                applyNight();
+            }
+
+            // Spawn wolves.
+            spawnTimer -= dt;
+            if (spawnTimer <= 0) {
+                spawnTimer = spawnInterval * (0.7 + Math.random() * 0.6);
+                if (wolves.length < 7) spawnWolf();
+            }
+
+            const fall = (wallY - fieldTop) / wolfTravel; // px/sec downward
+            for (let i = wolves.length - 1; i >= 0; i--) {
+                const w = wolves[i];
+                w.wob += dt * 4;
+
+                if (w.state === "lurk") {
+                    w.wait -= dt;
+                    if (inBeam(w)) { scare(w); }
+                    else if (w.wait <= 0) w.state = "creep";
+                } else if (w.state === "creep") {
+                    w.y += fall * dt;
+                    if (inBeam(w)) scare(w);
+                    else if (w.y >= wallY - unit * 0.04) {  // reached the wall
+                        breach();
+                        wolves.splice(i, 1);
+                    }
+                } else if (w.state === "flee") {
+                    w.y -= fall * 2.2 * dt;
+                    if (w.y < fieldTop - unit * 0.08) wolves.splice(i, 1);
+                }
+            }
+        }
+
+        function scare(w) {
+            if (w.state === "flee") return;
+            w.state = "flee";
+            score += 1;
+            host.setScore(score);
+            host.vibrate(10);
+            SGSound.play("flap");
+        }
+
+        function breach() {
+            hearts -= 1;
+            host.vibrate([50, 30, 60]);
+            SGSound.play("hit");
+            if (hearts <= 0) {
+                alive = false;
+                SGSound.play("gameover");
+                host.gameOver(score);
+            }
+        }
+
+        /* ---------- Drawing ---------- */
+        function draw() {
+            // Sky
+            const sky = ctx.createLinearGradient(0, 0, 0, wallY);
+            sky.addColorStop(0, "#13153a");
+            sky.addColorStop(0.6, "#231f4c");
+            sky.addColorStop(1, "#3a3566");
+            ctx.fillStyle = sky;
+            ctx.fillRect(0, 0, W, H);
+
+            drawMoonAndStars();
+
+            // Grass field
+            const grass = ctx.createLinearGradient(0, fieldTop, 0, wallY);
+            grass.addColorStop(0, "#2c3a30");
+            grass.addColorStop(1, "#161f17");
+            ctx.fillStyle = grass;
+            ctx.fillRect(0, fieldTop, W, wallY - fieldTop);
+
+            for (const b of bushes) drawBush(b.x, b.y);
+
+            // Lurking wolves' eyes shine from the bushes; creeping ones in the open.
+            for (const w of wolves) if (w.state !== "lurk") drawWolf(w);
+            for (const w of wolves) if (w.state === "lurk") drawEyes(w.x, w.y, false);
+
+            if (lanternOut) drawBeam();
+            drawOwl();
+            drawWall();
+            drawHUD();
+
+            if (!started) {
+                ctx.fillStyle = "rgba(242,243,255,0.9)";
+                ctx.font = "600 " + Math.round(unit * 0.05) + "px Georgia, serif";
+                ctx.textAlign = "center";
+                ctx.fillText("Drag to patrol the wall", W / 2, fieldTop + unit * 0.16);
+                ctx.font = "500 " + Math.round(unit * 0.038) + "px Georgia, serif";
+                ctx.fillStyle = "rgba(242,243,255,0.7)";
+                ctx.fillText("Lantern lit: slow but scares wolves · stow it to dash", W / 2, fieldTop + unit * 0.24);
+            }
+        }
+
+        function drawMoonAndStars() {
+            const mx = W * 0.84, my = H * 0.18, mr = unit * 0.07;
+            const g = ctx.createRadialGradient(mx, my, mr * 0.4, mx, my, mr * 3);
+            g.addColorStop(0, "rgba(238,240,255,0.5)");
+            g.addColorStop(1, "rgba(238,240,255,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(mx, my, mr * 3, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#eef0ff";
+            ctx.beginPath(); ctx.arc(mx, my, mr, 0, 6.28); ctx.fill();
+
+            ctx.fillStyle = "rgba(223,226,255,0.85)";
+            for (let i = 0; i < 22; i++) {
+                const sx = (i * 97 % 100) / 100 * W;
+                const sy = ((i * 53) % 100) / 100 * fieldTop * 0.95;
+                ctx.beginPath(); ctx.arc(sx, sy, (i % 3 === 0 ? 1.6 : 1), 0, 6.28); ctx.fill();
+            }
+        }
+
+        function drawBush(x, y) {
+            const r = unit * 0.07;
+            ctx.fillStyle = "#22341d";
+            ctx.beginPath(); ctx.ellipse(x, y + r * 0.5, r * 1.1, r * 0.6, 0, 0, 6.28); ctx.fill();
+            const bumps = [[-0.7, 0.1, 0.55], [0, -0.25, 0.7], [0.7, 0.1, 0.55], [-0.35, -0.1, 0.4], [0.35, -0.1, 0.4]];
+            for (let i = 0; i < bumps.length; i++) {
+                ctx.fillStyle = i % 2 ? "#33502c" : "#2c4426";
+                ctx.beginPath();
+                ctx.arc(x + bumps[i][0] * r, y + bumps[i][1] * r, bumps[i][2] * r, 0, 6.28);
+                ctx.fill();
+            }
+        }
+
+        function drawEyes(x, y, warm) {
+            const s = unit * 0.012;
+            ctx.fillStyle = warm ? "#ffe14d" : "#9af0a0";
+            ctx.beginPath(); ctx.arc(x - s * 1.4, y, s, 0, 6.28); ctx.arc(x + s * 1.4, y, s, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#1a1206";
+            ctx.beginPath(); ctx.arc(x - s * 1.4, y, s * 0.4, 0, 6.28); ctx.arc(x + s * 1.4, y, s * 0.4, 0, 6.28); ctx.fill();
+        }
+
+        function drawWolf(w) {
+            const lit = w.state === "flee" || inBeam(w);
+            const s = unit * 0.05;
+            const bob = Math.sin(w.wob) * s * 0.06;
+            ctx.save();
+            ctx.translate(w.x, w.y + bob);
+            if (w.state === "flee") ctx.scale(-1, 1);   // turn tail and run
+            ctx.fillStyle = lit ? "#6a6e78" : "#3f434c";
+            ctx.beginPath(); ctx.ellipse(0, s * 0.2, s * 0.7, s * 0.36, 0, 0, 6.28); ctx.fill();
+            // legs
+            ctx.fillStyle = lit ? "#565a63" : "#33373f";
+            for (const lx of [-0.45, -0.15, 0.15, 0.45]) ctx.fillRect(lx * s - s * 0.05, s * 0.4, s * 0.1, s * 0.35);
+            // head
+            ctx.beginPath(); ctx.arc(-s * 0.55, -s * 0.1, s * 0.3, 0, 6.28); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(-s * 0.8, -s * 0.05); ctx.lineTo(-s * 1.15, s * 0.08); ctx.lineTo(-s * 0.78, s * 0.18); ctx.fill();
+            // ears
+            ctx.beginPath(); ctx.moveTo(-s * 0.65, -s * 0.35); ctx.lineTo(-s * 0.55, -s * 0.55); ctx.lineTo(-s * 0.45, -s * 0.3); ctx.fill();
+            ctx.restore();
+            drawEyes(w.x - s * 0.55, w.y - s * 0.12 + bob, lit && !(w.state === "flee"));
+        }
+
+        function drawBeam() {
+            const len = unit * 1.4;
+            const ax = ox, ay = lanternY;
+            const lx = ax - Math.sin(BEAM_HALF) * len, rx = ax + Math.sin(BEAM_HALF) * len;
+            const ty = ay - Math.cos(BEAM_HALF) * len;
+            const g = ctx.createLinearGradient(ax, ay, ax, ty);
+            g.addColorStop(0, "rgba(255,231,168,0.34)");
+            g.addColorStop(1, "rgba(255,231,168,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.moveTo(ax, ay); ctx.lineTo(lx, ty); ctx.lineTo(rx, ty); ctx.closePath();
+            ctx.fill();
+        }
+
+        function drawOwl() {
+            const cx = ox, baseY = wallY, h = unit * 0.2;
+            const headR = h * 0.42, bodyW = h * 0.5, bodyH = h * 0.6;
+            const bodyCy = baseY - bodyH * 0.55;
+            const headCy = bodyCy - bodyH * 0.55;
+
+            // body (armor)
+            ctx.fillStyle = "#7e8694";
+            ctx.beginPath(); ctx.ellipse(cx, bodyCy, bodyW, bodyH * 0.62, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#9aa1ad";
+            ctx.beginPath(); ctx.ellipse(cx - bodyW * 0.12, bodyCy + bodyH * 0.05, bodyW * 0.55, bodyH * 0.45, 0, 0, 6.28); ctx.fill();
+            // head
+            ctx.fillStyle = "#8a6840";
+            ctx.beginPath(); ctx.arc(cx, headCy, headR, 0, 6.28); ctx.fill();
+            // helmet dome
+            ctx.fillStyle = "#aab1bd";
+            ctx.beginPath(); ctx.arc(cx, headCy, headR, Math.PI, 0); ctx.lineTo(cx + headR * 0.85, headCy); ctx.arc(cx, headCy, headR * 0.85, 0, Math.PI, true); ctx.fill();
+            ctx.fillStyle = "#878e9c";
+            ctx.fillRect(cx - headR * 0.1, headCy - headR * 0.8, headR * 0.2, headR * 0.85);
+            // face disc + eyes
+            ctx.fillStyle = "#dcc99e";
+            ctx.beginPath(); ctx.ellipse(cx, headCy + headR * 0.2, headR * 0.78, headR * 0.72, 0, 0, 6.28); ctx.fill();
+            const er = headR * 0.3;
+            for (const side of [-1, 1]) {
+                const exx = cx + side * headR * 0.34;
+                ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(exx, headCy + headR * 0.12, er, 0, 6.28); ctx.fill();
+                ctx.fillStyle = "#e8a93a"; ctx.beginPath(); ctx.arc(exx + facing * er * 0.18, headCy + headR * 0.14, er * 0.6, 0, 6.28); ctx.fill();
+                ctx.fillStyle = "#20140a"; ctx.beginPath(); ctx.arc(exx + facing * er * 0.18, headCy + headR * 0.14, er * 0.3, 0, 6.28); ctx.fill();
+            }
+            ctx.fillStyle = "#d98a34";
+            ctx.beginPath(); ctx.moveTo(cx - er * 0.3, headCy + headR * 0.5); ctx.lineTo(cx + er * 0.3, headCy + headR * 0.5); ctx.lineTo(cx, headCy + headR * 0.8); ctx.fill();
+
+            // lantern (glows when out)
+            const lx = cx + facing * bodyW * 0.95, ly = bodyCy;
+            if (lanternOut) {
+                const g = ctx.createRadialGradient(lx, ly, 2, lx, ly, h * 0.6);
+                g.addColorStop(0, "rgba(255,243,204,0.9)"); g.addColorStop(1, "rgba(255,206,120,0)");
+                ctx.fillStyle = g; ctx.beginPath(); ctx.arc(lx, ly, h * 0.6, 0, 6.28); ctx.fill();
+            }
+            ctx.strokeStyle = "#4a3a26"; ctx.lineWidth = h * 0.03;
+            ctx.beginPath(); ctx.moveTo(cx + facing * bodyW * 0.5, bodyCy - bodyH * 0.1); ctx.lineTo(lx, ly - h * 0.12); ctx.stroke();
+            ctx.fillStyle = "#6e5a38"; ctx.fillRect(lx - h * 0.07, ly - h * 0.1, h * 0.14, h * 0.2);
+            ctx.fillStyle = lanternOut ? "#fff0b0" : "#5a4a2c"; ctx.fillRect(lx - h * 0.045, ly - h * 0.06, h * 0.09, h * 0.13);
+        }
+
+        function drawWall() {
+            const top = wallY + unit * 0.02;
+            ctx.fillStyle = "#5f5a4d";
+            ctx.fillRect(0, top, W, H - top);
+            ctx.fillStyle = "#726c5c";
+            ctx.fillRect(0, top - unit * 0.012, W, unit * 0.018);
+            // merlons
+            ctx.fillStyle = "#6b6456";
+            const mw = unit * 0.07, gap = mw * 1.4;
+            for (let x = -gap * 0.5; x < W; x += mw + gap) ctx.fillRect(x, top - unit * 0.045, mw, unit * 0.05);
+        }
+
+        function heart(x, y, r, filled) {
+            ctx.fillStyle = filled ? "#ff5d7d" : "rgba(255,255,255,0.22)";
+            ctx.beginPath();
+            ctx.moveTo(x, y + r * 0.3);
+            ctx.bezierCurveTo(x, y, x - r, y - r * 0.1, x - r, y + r * 0.35);
+            ctx.bezierCurveTo(x - r, y + r * 0.8, x, y + r * 1.1, x, y + r * 1.4);
+            ctx.bezierCurveTo(x, y + r * 1.1, x + r, y + r * 0.8, x + r, y + r * 0.35);
+            ctx.bezierCurveTo(x + r, y - r * 0.1, x, y, x, y + r * 0.3);
+            ctx.fill();
+        }
+
+        function drawHUD() {
+            // Hearts (top-left)
+            const hr = unit * 0.025;
+            for (let i = 0; i < START_HEARTS; i++) heart(unit * 0.06 + i * hr * 3, unit * 0.05, hr, i < hearts);
+
+            // Sun→moon dial arc (top-center) with the night's progress token
+            const cx = W / 2, ay = unit * 0.07, aw = unit * 0.34, ah = unit * 0.05;
+            ctx.strokeStyle = "rgba(216,195,154,0.8)"; ctx.lineWidth = unit * 0.012;
+            ctx.beginPath(); ctx.moveTo(cx - aw, ay); ctx.quadraticCurveTo(cx, ay - ah, cx + aw, ay); ctx.stroke();
+            ctx.fillStyle = "#ffd86a"; ctx.beginPath(); ctx.arc(cx - aw, ay, unit * 0.014, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#eef0ff"; ctx.beginPath(); ctx.arc(cx + aw, ay, unit * 0.016, 0, 6.28); ctx.fill();
+            // token rides dusk(left)→dawn(right)
+            const p = Math.min(1, nightT / (NIGHT_MS / 1000)), tx = cx - aw + p * aw * 2;
+            const ty = ay - ah * (1 - (2 * p - 1) * (2 * p - 1));
+            ctx.fillStyle = "#fff1c0"; ctx.strokeStyle = "#c98a2e"; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(tx, ty, unit * 0.018, 0, 6.28); ctx.fill(); ctx.stroke();
+
+            ctx.fillStyle = "rgba(242,243,255,0.85)";
+            ctx.font = "600 " + Math.round(unit * 0.032) + "px Georgia, serif";
+            ctx.textAlign = "center";
+            ctx.fillText("Night " + night, cx, ay + unit * 0.06);
+
+            // Stow / lantern button (bottom-right)
+            ctx.fillStyle = lanternOut ? "rgba(205,184,134,0.95)" : "rgba(120,110,150,0.95)";
+            ctx.strokeStyle = "#8a6d3f"; ctx.lineWidth = unit * 0.008;
+            ctx.beginPath(); ctx.arc(stow.x, stow.y, stow.r, 0, 6.28); ctx.fill(); ctx.stroke();
+            // little lantern glyph
+            ctx.fillStyle = "#6e5a38"; ctx.fillRect(stow.x - stow.r * 0.22, stow.y - stow.r * 0.35, stow.r * 0.44, stow.r * 0.6);
+            ctx.fillStyle = lanternOut ? "#fff0b0" : "#3a3322";
+            ctx.fillRect(stow.x - stow.r * 0.13, stow.y - stow.r * 0.22, stow.r * 0.26, stow.r * 0.4);
+            ctx.fillStyle = lanternOut ? "#5a4326" : "#ffe9c2";
+            ctx.font = "600 " + Math.round(unit * 0.026) + "px Georgia, serif";
+            ctx.fillText(lanternOut ? "stow" : "light", stow.x, stow.y + stow.r * 1.5);
+        }
+
+        function drawRotateHint() {
+            ctx.fillStyle = "#13153a"; ctx.fillRect(0, 0, W, H);
+            ctx.fillStyle = "#f2f3ff"; ctx.textAlign = "center";
+            ctx.font = "600 " + Math.round(Math.min(W, H) * 0.07) + "px Georgia, serif";
+            ctx.fillText("\u{1F504}", W / 2, H / 2 - Math.min(W, H) * 0.06);
+            ctx.font = "500 " + Math.round(Math.min(W, H) * 0.05) + "px Georgia, serif";
+            ctx.fillText("Rotate to landscape", W / 2, H / 2 + Math.min(W, H) * 0.04);
+        }
+
+        /* ---------- Orientation ---------- */
+        function lockLandscape() {
+            try {
+                if (screen.orientation && screen.orientation.lock) {
+                    screen.orientation.lock("landscape").catch(function () { /* unsupported (iOS) — overlay handles it */ });
+                }
+            } catch (e) { /* ignore */ }
+        }
+        function unlockOrientation() {
+            try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) { /* ignore */ }
+        }
+        function isPortrait() { return canvas.clientHeight > canvas.clientWidth * 1.05; }
+
+        /* ---------- Loop ---------- */
+        function loop(ts) {
+            rafId = requestAnimationFrame(loop);
+            if (isPortrait()) { resize(); paused = true; lastTs = ts; drawRotateHint(); return; }
+            if (paused) { paused = false; resize(); }
+            const dt = lastTs ? Math.min(0.05, (ts - lastTs) / 1000) : 0;
+            lastTs = ts;
+            if (alive) update(dt);
+            draw();
+        }
+
+        /* ---------- Input ---------- */
+        function localPoint(clientX, clientY) {
+            const r = canvas.getBoundingClientRect();
+            return { x: clientX - r.left, y: clientY - r.top };
+        }
+        function inStow(x, y) { return Math.hypot(x - stow.x, y - stow.y) <= stow.r * 1.25; }
+
+        function onDown(x, y) {
+            if (!alive) return;
+            if (inStow(x, y)) { toggleLantern(); return; }
+            dragging = true; started = true; targetX = clampX(x);
+        }
+        function onMove(x) { if (dragging) targetX = clampX(x); }
+        function onUp() { dragging = false; }
+
+        function onTouchStart(e) { const t = e.changedTouches[0]; const p = localPoint(t.clientX, t.clientY); onDown(p.x, p.y); }
+        function onTouchMove(e) { e.preventDefault(); const t = e.changedTouches[0]; const p = localPoint(t.clientX, t.clientY); onMove(p.x); }
+        function onTouchEnd() { onUp(); }
+        function onMouseDown(e) { const p = localPoint(e.clientX, e.clientY); onDown(p.x, p.y); }
+        function onMouseMove(e) { const p = localPoint(e.clientX, e.clientY); onMove(p.x); }
+        function onMouseUp() { onUp(); }
+        function onKey(e) {
+            if (e.key === "ArrowLeft" || e.key === "a") { keys.left = true; started = true; e.preventDefault(); }
+            else if (e.key === "ArrowRight" || e.key === "d") { keys.right = true; started = true; e.preventDefault(); }
+            else if (e.key === " " || e.key === "ArrowUp") { toggleLantern(); e.preventDefault(); }
+        }
+        function onKeyUp(e) {
+            if (e.key === "ArrowLeft" || e.key === "a") keys.left = false;
+            else if (e.key === "ArrowRight" || e.key === "d") keys.right = false;
+        }
+
+        return {
+            start() {
+                lockLandscape();
+                resize();
+                reset();
+                window.addEventListener("resize", resize);
+                canvas.addEventListener("touchstart", onTouchStart, { passive: true });
+                canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+                canvas.addEventListener("touchend", onTouchEnd, { passive: true });
+                canvas.addEventListener("mousedown", onMouseDown);
+                window.addEventListener("mousemove", onMouseMove);
+                window.addEventListener("mouseup", onMouseUp);
+                window.addEventListener("keydown", onKey);
+                window.addEventListener("keyup", onKeyUp);
+                rafId = requestAnimationFrame(loop);
+            },
+            restart() { reset(); },
+            destroy() {
+                cancelAnimationFrame(rafId);
+                unlockOrientation();
+                window.removeEventListener("resize", resize);
+                canvas.removeEventListener("touchstart", onTouchStart);
+                canvas.removeEventListener("touchmove", onTouchMove);
+                canvas.removeEventListener("touchend", onTouchEnd);
+                canvas.removeEventListener("mousedown", onMouseDown);
+                window.removeEventListener("mousemove", onMouseMove);
+                window.removeEventListener("mouseup", onMouseUp);
+                window.removeEventListener("keydown", onKey);
+                window.removeEventListener("keyup", onKeyUp);
+            }
+        };
+    }
+
+    window.SGGames = window.SGGames || {};
+    window.SGGames.watchswap = {
+        id: "watchswap",
+        name: "Watch Swap",
+        emoji: "\u{1F989}",
+        tag: "Guard the wall. Shine the lantern, shoo the wolves.",
+        scoreLabel: "wolves shooed",
+        create: create
+    };
+})();

@@ -12,7 +12,8 @@
         "snake", "astro", "piestack", "flappy", "moles", "memory",
         "echo", "bricks", "hopper", "fruit", "tiles", "colorrush",
         "beatloop", "taptiles", "stopspin", "lanedash", "stormquest", "sentry",
-        "bughunt", "digger", "catcher", "turtlecave", "abctrace", "lettersiege"
+        "bughunt", "digger", "catcher", "turtlecave", "abctrace", "lettersiege",
+        "watchswap"
     ];
 
     // Home-screen categories and which one each game belongs to. Games missing
@@ -26,7 +27,7 @@
     const GAME_CATEGORY = {
         snake: "classic", astro: "classic", piestack: "classic", moles: "classic",
         bricks: "classic", fruit: "classic", stopspin: "classic", sentry: "classic",
-        bughunt: "classic", catcher: "classic",
+        bughunt: "classic", catcher: "classic", watchswap: "classic",
         memory: "puzzle", echo: "puzzle", tiles: "puzzle", colorrush: "puzzle", beatloop: "puzzle",
         abctrace: "learning", lettersiege: "learning",
         flappy: "scroller", hopper: "scroller", taptiles: "scroller", lanedash: "scroller",
