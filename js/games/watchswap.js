@@ -1,6 +1,6 @@
 /* ============ Watch Swap — guard the wall ============ */
 /* Night: the Knight Owl stands centre-wall and swipes to aim a narrow
-   lantern beam at the wolves converging on the gate — the beam burns oil.
+   lantern beam at the wolves converging on the gate; light wears them down.
    Day: the Early Bird keeps the noise down so the Owl can sleep.          */
 (function () {
     "use strict";
@@ -15,10 +15,9 @@
         const NIGHT_MS = kids ? 40000 : 46000;
         const BEAM_HALF = 0.16;                // narrow beam cone — aim matters
         const MAX_TILT = kids ? 1.05 : 0.95;   // how far the beam swings from vertical
-        const AIM_LERP = 12;                   // how quickly the beam eases to the swipe
+        const AIM_LERP = 14;                   // how quickly the beam eases to the swipe
+        const AIM_SENS = 2.2;                  // swipe gain — beam travel per finger travel
         const BUSH_COUNT = 6;
-        const OIL_MAX = kids ? 130 : 100;
-        const BEAM_OIL_DRAIN = kids ? 3.5 : 5; // oil burned per second the beam is lit
         const DAY_MS = kids ? 32000 : 36000;
         const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
         const NOISE_MAX = 100;
@@ -28,12 +27,12 @@
         const LIGHT_DPS = 1.0;                 // light drains this much wolf health per second
 
         let W, H, unit, wallY, fieldTop, lanternY, ox, targetX, facing;
-        let bushes, wolves, oil, hearts, score, night;
+        let bushes, wolves, hearts, score, night;
         let beamActive, beamAngle, beamTargetAngle, pointerDown, started, alive, paused;
         let spawnTimer, spawnInterval, wolfTravel, nightT;
         let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul;
         let disturbances, distSpawnTimer, distInterval, errand;
-        let owlSleepX, oilBarrel, flash;
+        let owlSleepX, flash;
         let overlapKind, overlapNext, overlapT;
         let rafId, lastTs;
         let dragging = false;
@@ -53,7 +52,6 @@
             lanternY = wallY - unit * 0.14;
             layoutBushes();
             owlSleepX = W * 0.16;
-            oilBarrel = { x: W * 0.84 };
         }
 
         function layoutBushes() {
@@ -77,7 +75,6 @@
             alive = true;
             paused = false;
             nightT = 0;
-            oil = OIL_MAX;
             phase = "night";
             dayT = 0;
             noise = 0;
@@ -171,17 +168,8 @@
             SGSound.play("eat");
         }
 
-        function refillOil() {
-            oil = OIL_MAX;
-            noise = Math.min(NOISE_MAX, noise + 14);   // hauling oil is noisy
-            host.vibrate(12);
-            SGSound.play("drop");
-            if (noise >= NOISE_MAX && owlRested) wakeOwl();
-        }
-
         function doErrand() {
-            if (errand.kind === "oil") refillOil();
-            else hush(errand.ref);
+            hush(errand.ref);
             errand = null;
         }
 
@@ -211,7 +199,7 @@
 
         // Point the beam toward the swiped column (clamped to the tilt range).
         function aimBeam(x) {
-            const t = (x - W / 2) / (W * 0.5);
+            const t = (x - W / 2) / (W * 0.5) * AIM_SENS;   // sensitivity gain
             beamTargetAngle = Math.max(-MAX_TILT, Math.min(MAX_TILT, t * MAX_TILT));
         }
 
@@ -220,7 +208,7 @@
 
         // Is the wolf inside the aimed, narrow beam from the centered owl?
         function inBeam(w) {
-            if (!beamActive || oil <= 0) return false;
+            if (!beamActive) return false;
             const dx = w.x - W / 2;
             const dy = lanternY - w.y;            // positive = above the owl
             if (dy <= 0) return false;
@@ -245,10 +233,7 @@
             overlapNext = nextFn;
             overlapT = 0;
             errand = null; dragging = false; pointerDown = false;
-            if (kind === "dawn") {
-                if (hearts < START_HEARTS) hearts += 1;       // a good night's rest
-                oil = Math.min(OIL_MAX, oil + 30);            // breakfast tops up the oil
-            }
+            if (kind === "dawn" && hearts < START_HEARTS) hearts += 1;   // a good night's rest
             flash = 0.5;
             host.vibrate(20);
             SGSound.play("match");
@@ -288,9 +273,6 @@
 
             nightT += dt;
             if (nightT >= NIGHT_MS / 1000) { enterOverlap("dawn", enterDay); return; }
-
-            // The beam burns oil while it's lit.
-            if (beamActive && oil > 0) oil = Math.max(0, oil - BEAM_OIL_DRAIN * dt);
 
             // Spawn wolves.
             spawnTimer -= dt;
@@ -336,8 +318,7 @@
 
             // Walk an errand to its target, then act on arrival.
             if (errand) {
-                const tx = errand.kind === "oil" ? oilBarrel.x : errand.ref.x;
-                if (Math.abs(ox - tx) < unit * 0.12) doErrand();
+                if (Math.abs(ox - errand.ref.x) < unit * 0.12) doErrand();
             }
 
             // Spawn disturbances.
@@ -428,7 +409,7 @@
                 ctx.fillText("Swipe to aim the lantern beam", W / 2, fieldTop + unit * 0.16);
                 ctx.font = "500 " + Math.round(unit * 0.038) + "px Georgia, serif";
                 ctx.fillStyle = "rgba(242,243,255,0.7)";
-                ctx.fillText("Hold light on a wolf to drive it back — but the beam burns oil", W / 2, fieldTop + unit * 0.24);
+                ctx.fillText("Hold the light on a wolf to wear it down and drive it back", W / 2, fieldTop + unit * 0.24);
             }
         }
 
@@ -502,7 +483,7 @@
         }
 
         function drawBeam() {
-            if (!beamActive || oil <= 0) return;
+            if (!beamActive) return;
             const half = BEAM_HALF * beamHalfMul;
             const len = unit * 1.7 * beamRangeMul;
             const ax = W / 2, ay = lanternY;
@@ -561,18 +542,6 @@
                 }
             }
 
-            // lantern held up at centre — the beam's source (glows while lit)
-            const lit = beamActive && oil > 0;
-            const lx = cx, ly = lanternY;
-            if (lit) {
-                const g = ctx.createRadialGradient(lx, ly, 2, lx, ly, h * 0.6);
-                g.addColorStop(0, "rgba(255,243,204,0.9)"); g.addColorStop(1, "rgba(255,206,120,0)");
-                ctx.fillStyle = g; ctx.beginPath(); ctx.arc(lx, ly, h * 0.6, 0, 6.28); ctx.fill();
-            }
-            ctx.strokeStyle = "#4a3a26"; ctx.lineWidth = h * 0.03;
-            ctx.beginPath(); ctx.moveTo(cx + facing * bodyW * 0.4, bodyCy - bodyH * 0.2); ctx.lineTo(lx, ly + h * 0.1); ctx.stroke();
-            ctx.fillStyle = "#6e5a38"; ctx.fillRect(lx - h * 0.07, ly - h * 0.02, h * 0.14, h * 0.2);
-            ctx.fillStyle = lit ? "#fff0b0" : "#5a4a2c"; ctx.fillRect(lx - h * 0.045, ly + h * 0.02, h * 0.09, h * 0.13);
         }
 
         function drawWall() {
@@ -609,19 +578,6 @@
             ctx.fill();
         }
 
-        function drawOilGauge(labelColor) {
-            const ogw = unit * 0.22, ogh = unit * 0.028, ogx = W - ogw - unit * 0.05, ogy = unit * 0.045;
-            ctx.fillStyle = labelColor;
-            ctx.font = "600 " + Math.round(unit * 0.028) + "px Georgia, serif";
-            ctx.textAlign = "right";
-            ctx.fillText("oil", ogx - unit * 0.012, ogy + ogh * 0.85);
-            ctx.fillStyle = "rgba(191,166,118,0.45)";
-            roundRectFill(ogx, ogy, ogw, ogh, ogh * 0.5);
-            ctx.fillStyle = oil > OIL_MAX * 0.25 ? "#e0922e" : "#e05a3a";
-            if (oil > 0) roundRectFill(ogx, ogy, ogw * (oil / OIL_MAX), ogh, ogh * 0.5);
-            ctx.textAlign = "center";
-        }
-
         // Sun→moon arc with a token showing how far through the phase we are.
         function drawDial(p, label, labelColor) {
             p = Math.min(1, p);
@@ -655,7 +611,6 @@
         function drawHUD() {
             const hr = unit * 0.025;
             for (let i = 0; i < START_HEARTS; i++) heart(unit * 0.06 + i * hr * 3, unit * 0.05, hr, i < hearts);
-            drawOilGauge("rgba(242,243,255,0.85)");
             drawDial(nightT / (NIGHT_MS / 1000), "Night " + night, "rgba(242,243,255,0.85)");
             if (!owlRested) {
                 ctx.fillStyle = "rgba(255,184,120,0.95)";
@@ -663,17 +618,10 @@
                 ctx.textAlign = "center";
                 ctx.fillText("tired owl · dim beam", W / 2, unit * 0.165);
             }
-            if (oil <= 0) {
-                ctx.fillStyle = "rgba(224,90,58,0.95)";
-                ctx.font = "600 " + Math.round(unit * 0.03) + "px Georgia, serif";
-                ctx.textAlign = "center";
-                ctx.fillText("out of oil!", W / 2, H - unit * 0.05);
-            }
         }
 
         function drawHUDDay() {
             drawNoiseMeter();
-            drawOilGauge("rgba(40,40,60,0.9)");
             drawDial(dayT / (DAY_MS / 1000), "Day " + night, "rgba(40,40,60,0.9)");
         }
 
@@ -693,7 +641,6 @@
             drawBird(ox);
             drawWall();
             for (const d of disturbances) drawDisturbance(d);
-            drawOilBarrel();
             drawHUDDay();
 
             if (night === 1 && dayT < 4.5) {
@@ -701,7 +648,7 @@
                 ctx.font = "600 " + Math.round(unit * 0.05) + "px Georgia, serif";
                 ctx.fillText("Daytime — keep the owl asleep", W / 2, fieldTop + unit * 0.15);
                 ctx.font = "500 " + Math.round(unit * 0.036) + "px Georgia, serif";
-                ctx.fillText("Tap a noise to hush it · tap the oil barrel to refill for tonight", W / 2, fieldTop + unit * 0.22);
+                ctx.fillText("Tap each noise to hush it before the racket wakes the owl", W / 2, fieldTop + unit * 0.22);
             }
         }
 
@@ -784,16 +731,6 @@
             }
         }
 
-        function drawOilBarrel() {
-            const x = oilBarrel.x, y = wallY - unit * 0.02, w = unit * 0.07, h = unit * 0.085;
-            ctx.fillStyle = "#6e4a2a"; roundRectFill(x - w / 2, y - h, w, h, unit * 0.01);
-            ctx.strokeStyle = "#4a3018"; ctx.lineWidth = unit * 0.006;
-            ctx.beginPath();
-            ctx.moveTo(x - w / 2, y - h * 0.66); ctx.lineTo(x + w / 2, y - h * 0.66);
-            ctx.moveTo(x - w / 2, y - h * 0.33); ctx.lineTo(x + w / 2, y - h * 0.33); ctx.stroke();
-            ctx.fillStyle = "#e0922e"; ctx.beginPath(); ctx.arc(x, y - h * 0.5, w * 0.16, 0, 6.28); ctx.fill();
-        }
-
         /* ---------- Overlap (tower hand-off) ---------- */
         function drawOverlap() {
             const floorY = H * 0.76;
@@ -836,7 +773,7 @@
             ctx.font = "500 " + Math.round(unit * 0.034) + "px Georgia, serif";
             ctx.fillStyle = "rgba(60,48,32,0.9)";
             ctx.fillText(overlapKind === "dawn"
-                ? "The night is won — heart restored, oil topped up."
+                ? "The night is won — a heart restored over breakfast."
                 : "The Bird turns in; the Owl takes the wall.", W / 2, H * 0.41);
 
             const pulse = 0.55 + 0.35 * Math.sin(Date.now() / 320);
@@ -938,7 +875,6 @@
             for (const d of disturbances) {
                 if (Math.hypot(x - d.x, y - (wallY - unit * 0.03)) <= unit * 0.08) { errand = { kind: "hush", ref: d }; targetX = clampX(d.x); return; }
             }
-            if (Math.hypot(x - oilBarrel.x, y - (wallY - unit * 0.04)) <= unit * 0.08) { errand = { kind: "oil" }; targetX = clampX(oilBarrel.x); return; }
             errand = null; dragging = true; targetX = clampX(x);
         }
         function onMove(x) {
