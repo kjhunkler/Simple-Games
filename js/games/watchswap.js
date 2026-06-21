@@ -32,7 +32,7 @@
         let spawnTimer, spawnInterval, wolfTravel, nightT;
         let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul, beamPowerMul;
         let disturbances, distSpawnTimer, distInterval, errand;
-        let owlSleepX, flash;
+        let owlSleepX, flash, lanternStationX, lanternReady;
         let overlapKind, overlapNext, overlapT;
         let rafId, lastTs;
         let dragging = false;
@@ -52,6 +52,7 @@
             lanternY = wallY - unit * 0.14;
             layoutBushes();
             owlSleepX = W * 0.16;
+            lanternStationX = W * 0.84;
         }
 
         function layoutBushes() {
@@ -82,6 +83,7 @@
             beamHalfMul = 1;
             beamRangeMul = 1;
             beamPowerMul = 1;
+            lanternReady = 0;
             disturbances = [];
             errand = null;
             flash = 0;
@@ -112,6 +114,7 @@
             wolves = [];
             noise = 0;
             owlRested = true;
+            lanternReady = 0;
             disturbances = [];
             errand = null;
             ox = W / 2; targetX = ox; facing = 1;
@@ -131,7 +134,8 @@
             wolves = [];
             beamHalfMul = owlRested ? 1 : 0.62;
             beamRangeMul = owlRested ? 1 : 0.68;
-            beamPowerMul = owlRested ? 1 : 0.5;   // a weak beam wears wolves down slowly
+            // Rest sets the base; a well-tended lantern adds power on top.
+            beamPowerMul = Math.min(1.4, (owlRested ? 1 : 0.5) + (lanternReady / 100) * 0.5);
             if (owlRested) { score += 3; host.setScore(score); }   // quiet-day bonus
             ox = W / 2; targetX = ox; facing = 1;
             beamActive = false; beamAngle = 0; beamTargetAngle = 0; pointerDown = false;
@@ -170,8 +174,18 @@
             SGSound.play("eat");
         }
 
+        // Tending the lantern readies the night's beam — but it's noisy work.
+        function tendLantern() {
+            lanternReady = Math.min(100, lanternReady + 25);
+            noise = Math.min(NOISE_MAX, noise + 12);
+            host.vibrate(10);
+            SGSound.play("drop");
+            if (noise >= NOISE_MAX && owlRested) wakeOwl();
+        }
+
         function doErrand() {
-            hush(errand.ref);
+            if (errand.kind === "lantern") tendLantern();
+            else hush(errand.ref);
             errand = null;
         }
 
@@ -320,7 +334,8 @@
 
             // Walk an errand to its target, then act on arrival.
             if (errand) {
-                if (Math.abs(ox - errand.ref.x) < unit * 0.12) doErrand();
+                const tx = errand.kind === "lantern" ? lanternStationX : errand.ref.x;
+                if (Math.abs(ox - tx) < unit * 0.12) doErrand();
             }
 
             // Spawn disturbances.
@@ -614,16 +629,33 @@
             const hr = unit * 0.025;
             for (let i = 0; i < START_HEARTS; i++) heart(unit * 0.06 + i * hr * 3, unit * 0.05, hr, i < hearts);
             drawDial(nightT / (NIGHT_MS / 1000), "Night " + night, "rgba(242,243,255,0.85)");
-            if (!owlRested) {
-                ctx.fillStyle = "rgba(255,184,120,0.95)";
-                ctx.font = "500 " + Math.round(unit * 0.026) + "px Georgia, serif";
-                ctx.textAlign = "center";
+            ctx.font = "500 " + Math.round(unit * 0.026) + "px Georgia, serif";
+            ctx.textAlign = "center";
+            if (beamPowerMul < 0.9) {
+                ctx.fillStyle = "rgba(255,150,110,0.95)";
                 ctx.fillText("tired owl · weak beam", W / 2, unit * 0.165);
+            } else if (beamPowerMul > 1.15) {
+                ctx.fillStyle = "rgba(150,230,150,0.95)";
+                ctx.fillText("lantern readied · strong beam", W / 2, unit * 0.165);
             }
+        }
+
+        function drawReadyGauge(labelColor) {
+            const ogw = unit * 0.2, ogh = unit * 0.03, ogx = W - ogw - unit * 0.05, ogy = unit * 0.055;
+            ctx.fillStyle = labelColor;
+            ctx.font = "600 " + Math.round(unit * 0.026) + "px Georgia, serif";
+            ctx.textAlign = "right";
+            ctx.fillText("lantern", ogx + ogw, ogy - unit * 0.012);
+            ctx.fillStyle = "rgba(191,166,118,0.4)";
+            roundRectFill(ogx, ogy, ogw, ogh, ogh * 0.5);
+            ctx.fillStyle = "#e0a82e";
+            if (lanternReady > 0) roundRectFill(ogx, ogy, ogw * (lanternReady / 100), ogh, ogh * 0.5);
+            ctx.textAlign = "center";
         }
 
         function drawHUDDay() {
             drawNoiseMeter();
+            drawReadyGauge("rgba(40,40,60,0.9)");
             drawDial(dayT / (DAY_MS / 1000), "Day " + night, "rgba(40,40,60,0.9)");
         }
 
@@ -643,15 +675,29 @@
             drawBird(ox);
             drawWall();
             for (const d of disturbances) drawDisturbance(d);
+            drawLanternStation();
             drawHUDDay();
 
-            if (night === 1 && dayT < 4.5) {
+            if (night === 1 && dayT < 5.5) {
                 ctx.fillStyle = "rgba(38,38,58,0.92)"; ctx.textAlign = "center";
                 ctx.font = "600 " + Math.round(unit * 0.05) + "px Georgia, serif";
-                ctx.fillText("Daytime — keep the owl asleep", W / 2, fieldTop + unit * 0.15);
-                ctx.font = "500 " + Math.round(unit * 0.036) + "px Georgia, serif";
-                ctx.fillText("Tap each noise to hush it before the racket wakes the owl", W / 2, fieldTop + unit * 0.22);
+                ctx.fillText("Daytime — keep the owl asleep", W / 2, fieldTop + unit * 0.14);
+                ctx.font = "500 " + Math.round(unit * 0.034) + "px Georgia, serif";
+                ctx.fillText("Hush each noise so the racket doesn't wake the owl", W / 2, fieldTop + unit * 0.20);
+                ctx.fillText("Tend the lantern (right) to ready tonight's beam — but it's noisy", W / 2, fieldTop + unit * 0.26);
             }
+        }
+
+        function drawLanternStation() {
+            const x = lanternStationX, baseY = wallY - unit * 0.02;
+            ctx.fillStyle = "#5a4326"; ctx.fillRect(x - unit * 0.008, baseY - unit * 0.06, unit * 0.016, unit * 0.06);
+            const ly = baseY - unit * 0.085, ready = lanternReady / 100;
+            const g = ctx.createRadialGradient(x, ly, 1, x, ly, unit * 0.07);
+            g.addColorStop(0, "rgba(255,225,150," + (0.25 + ready * 0.65) + ")"); g.addColorStop(1, "rgba(255,206,120,0)");
+            ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, ly, unit * 0.07, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#4a3a26"; ctx.fillRect(x - unit * 0.024, ly - unit * 0.028, unit * 0.048, unit * 0.008);
+            ctx.fillStyle = "#6e5a38"; roundRectFill(x - unit * 0.018, ly - unit * 0.02, unit * 0.036, unit * 0.05, unit * 0.006);
+            ctx.fillStyle = ready > 0.05 ? "#ffe39a" : "#3a3322"; roundRectFill(x - unit * 0.012, ly - unit * 0.012, unit * 0.024, unit * 0.034, unit * 0.004);
         }
 
         function drawSun() {
@@ -877,6 +923,7 @@
             for (const d of disturbances) {
                 if (Math.hypot(x - d.x, y - (wallY - unit * 0.03)) <= unit * 0.08) { errand = { kind: "hush", ref: d }; targetX = clampX(d.x); return; }
             }
+            if (Math.hypot(x - lanternStationX, y - (wallY - unit * 0.05)) <= unit * 0.09) { errand = { kind: "lantern" }; targetX = clampX(lanternStationX); return; }
             errand = null; dragging = true; targetX = clampX(x);
         }
         function onMove(x) {
