@@ -25,6 +25,7 @@
         const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
         const NOISE_MAX = 100;
         const OVERLAP_AUTO = 7;                // seconds before a hand-off auto-continues
+        const MARAUDER_TRAVEL = kids ? 8 : 5.5;   // seconds field→wall for a day wolf
 
         let W, H, unit, wallY, fieldTop, lanternY, ox, targetX, facing;
         let bushes, wolves, torches, oil, hearts, score, night;
@@ -32,6 +33,7 @@
         let spawnTimer, spawnInterval, wolfTravel, nightT;
         let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul;
         let disturbances, distSpawnTimer, distInterval, errand;
+        let marauders, marauderTimer, marauderInterval;
         let owlSleepX, oilBarrel, flash;
         let overlapKind, overlapNext, overlapT;
         let rafId, lastTs;
@@ -98,6 +100,7 @@
             beamHalfMul = 1;
             beamRangeMul = 1;
             disturbances = [];
+            marauders = [];
             errand = null;
             flash = 0;
             overlapNext = null;
@@ -116,6 +119,7 @@
         }
         function applyDay() {
             distInterval = Math.max(kids ? 2.4 : 1.7, (kids ? 3.8 : 2.9) - (night - 1) * 0.18);
+            marauderInterval = Math.max(kids ? 9 : 6, (kids ? 15 : 11) - (night - 1) * 0.5);
         }
 
         // Dawn: the night is survived — hand off to the Early Bird's day watch.
@@ -128,10 +132,12 @@
             noise = 0;
             owlRested = true;
             disturbances = [];
+            marauders = [];
             errand = null;
             ox = W / 2; targetX = ox; facing = 1;
             applyDay();
             distSpawnTimer = distInterval * 0.5;
+            marauderTimer = marauderInterval * 0.8;
             flash = 0.5;
             host.vibrate([20, 40, 20]);
             SGSound.play("score");
@@ -144,6 +150,7 @@
             applyNight();
             nightT = 0;
             wolves = [];
+            marauders = [];
             for (const t of torches) t.lit = false;
             beamHalfMul = owlRested ? 1 : 0.62;
             beamRangeMul = owlRested ? 1 : 0.68;
@@ -175,6 +182,20 @@
             SGSound.play("flip");
         }
 
+        function spawnMarauder() {
+            marauders.push({ x: W * (0.2 + Math.random() * 0.6), y: fieldTop, wob: Math.random() * 6.28 });
+        }
+
+        // Shooing a day wolf works, but the squawking is noisy.
+        function shooMarauder(m) {
+            const idx = marauders.indexOf(m);
+            if (idx >= 0) marauders.splice(idx, 1);
+            noise = Math.min(NOISE_MAX, noise + 10);
+            host.vibrate(10);
+            SGSound.play("flap");
+            if (noise >= NOISE_MAX && owlRested) wakeOwl();
+        }
+
         function refillOil() {
             oil = OIL_MAX;
             noise = Math.min(NOISE_MAX, noise + 14);   // hauling oil is noisy
@@ -185,6 +206,7 @@
 
         function doErrand() {
             if (errand.kind === "oil") refillOil();
+            else if (errand.kind === "wolf") { if (marauders.indexOf(errand.ref) >= 0) shooMarauder(errand.ref); }
             else hush(errand.ref);
             errand = null;
         }
@@ -355,10 +377,12 @@
             dayT += dt;
             if (dayT >= DAY_MS / 1000) { enterOverlap("dusk", enterNight); return; }
 
-            // Walk an errand to its target, then act on arrival.
+            // Walk an errand to its target, then act on arrival. The target may
+            // be a moving day wolf, so re-read its position each frame.
             if (errand) {
                 const tx = errand.kind === "oil" ? oilBarrel.x : errand.ref.x;
-                if (Math.abs(ox - tx) < unit * 0.1) doErrand();
+                if (errand.kind === "wolf" && marauders.indexOf(errand.ref) < 0) errand = null;
+                else if (Math.abs(ox - tx) < unit * 0.12) doErrand();
             }
 
             // Spawn disturbances.
@@ -366,6 +390,26 @@
             if (distSpawnTimer <= 0) {
                 distSpawnTimer = distInterval * (0.7 + Math.random() * 0.6);
                 if (disturbances.length < 5) spawnDisturbance();
+            }
+
+            // Spawn the occasional bold Noon Marauder.
+            marauderTimer -= dt;
+            if (marauderTimer <= 0) {
+                marauderTimer = marauderInterval * (0.7 + Math.random() * 0.6);
+                if (marauders.length < 3) spawnMarauder();
+            }
+            const mFall = (wallY - fieldTop) / MARAUDER_TRAVEL;
+            for (let i = marauders.length - 1; i >= 0; i--) {
+                const m = marauders[i];
+                m.wob += dt * 5;
+                m.y += mFall * dt;
+                if (m.y >= wallY - unit * 0.04) {   // reached the wall — a big racket
+                    marauders.splice(i, 1);
+                    noise = Math.min(NOISE_MAX, noise + 25);
+                    flash = 0.4;
+                    host.vibrate([40, 30, 40]);
+                    SGSound.play("wrong");
+                }
             }
 
             // Active disturbances pump the noise up; quiet lets it settle.
@@ -604,6 +648,15 @@
             ctx.fillStyle = "#d98a34";
             ctx.beginPath(); ctx.moveTo(cx - er * 0.3, headCy + headR * 0.5); ctx.lineTo(cx + er * 0.3, headCy + headR * 0.5); ctx.lineTo(cx, headCy + headR * 0.8); ctx.fill();
 
+            // A kept-awake owl is heavy-lidded and droopy.
+            if (!owlRested) {
+                ctx.fillStyle = "#dcc99e";
+                for (const side of [-1, 1]) {
+                    const exx = cx + side * headR * 0.34;
+                    ctx.beginPath(); ctx.ellipse(exx, headCy + headR * 0.12 - er * 0.5, er * 1.15, er * 0.78, 0, 0, 6.28); ctx.fill();
+                }
+            }
+
             // lantern (glows when out)
             const lx = cx + facing * bodyW * 0.95, ly = bodyCy;
             if (lanternOut) {
@@ -699,6 +752,12 @@
             for (let i = 0; i < START_HEARTS; i++) heart(unit * 0.06 + i * hr * 3, unit * 0.05, hr, i < hearts);
             drawOilGauge("rgba(242,243,255,0.85)");
             drawDial(nightT / (NIGHT_MS / 1000), "Night " + night, "rgba(242,243,255,0.85)");
+            if (!owlRested) {
+                ctx.fillStyle = "rgba(255,184,120,0.95)";
+                ctx.font = "500 " + Math.round(unit * 0.026) + "px Georgia, serif";
+                ctx.textAlign = "center";
+                ctx.fillText("tired owl · dim beam", W / 2, unit * 0.165);
+            }
 
             // Stow / lantern button (bottom-right)
             ctx.fillStyle = lanternOut ? "rgba(205,184,134,0.95)" : "rgba(120,110,150,0.95)";
@@ -730,6 +789,7 @@
             ctx.fillStyle = grass; ctx.fillRect(0, fieldTop, W, wallY - fieldTop);
             for (const b of bushes) drawBush(b.x, b.y);
 
+            for (const m of marauders) drawMarauder(m);
             drawSleepingOwl(owlSleepX);
             drawBird(ox);
             drawWall();
@@ -833,6 +893,22 @@
             ctx.moveTo(x - w / 2, y - h * 0.66); ctx.lineTo(x + w / 2, y - h * 0.66);
             ctx.moveTo(x - w / 2, y - h * 0.33); ctx.lineTo(x + w / 2, y - h * 0.33); ctx.stroke();
             ctx.fillStyle = "#e0922e"; ctx.beginPath(); ctx.arc(x, y - h * 0.5, w * 0.16, 0, 6.28); ctx.fill();
+        }
+
+        function drawMarauder(m) {
+            const s = unit * 0.055, bob = Math.sin(m.wob) * s * 0.08;
+            ctx.save(); ctx.translate(m.x, m.y + bob);
+            ctx.fillStyle = "#5a5a64";
+            ctx.beginPath(); ctx.ellipse(0, s * 0.2, s * 0.72, s * 0.38, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#46464e";
+            for (const lx of [-0.45, -0.15, 0.15, 0.45]) ctx.fillRect(lx * s - s * 0.05, s * 0.42, s * 0.1, s * 0.36);
+            ctx.fillStyle = "#5a5a64";
+            ctx.beginPath(); ctx.arc(-s * 0.6, -s * 0.05, s * 0.32, 0, 6.28); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(-s * 0.85, 0); ctx.lineTo(-s * 1.2, s * 0.12); ctx.lineTo(-s * 0.82, s * 0.22); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(-s * 0.72, -s * 0.32); ctx.lineTo(-s * 0.6, -s * 0.55); ctx.lineTo(-s * 0.5, -s * 0.28); ctx.fill();
+            ctx.fillStyle = "#1a1206";
+            ctx.beginPath(); ctx.arc(-s * 0.62, -s * 0.08, s * 0.06, 0, 6.28); ctx.fill();
+            ctx.restore();
         }
 
         /* ---------- Overlap (tower hand-off) ---------- */
@@ -981,6 +1057,9 @@
             dragging = true; started = true; targetX = clampX(x);
         }
         function onDownDay(x, y) {
+            for (const m of marauders) {
+                if (Math.hypot(x - m.x, y - m.y) <= unit * 0.09) { errand = { kind: "wolf", ref: m }; targetX = clampX(m.x); return; }
+            }
             for (const d of disturbances) {
                 if (Math.hypot(x - d.x, y - (wallY - unit * 0.03)) <= unit * 0.08) { errand = { kind: "hush", ref: d }; targetX = clampX(d.x); return; }
             }
