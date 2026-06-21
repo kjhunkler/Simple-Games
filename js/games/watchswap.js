@@ -20,6 +20,7 @@
         const BUSH_COUNT = 6;
         const DAY_MS = kids ? 32000 : 36000;
         const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
+        const HUSH_FRAC = 0.18;                // bird must be within this (×unit) to hush an item
         const NOISE_MAX = 100;
         const OVERLAP_AUTO = 7;                // seconds before a hand-off auto-continues
         const WOLF_HP = kids ? 0.8 : 1.0;      // seconds of sustained light to drive a wolf off
@@ -31,8 +32,8 @@
         let beamActive, beamAngle, beamTargetAngle, pointerDown, started, alive, paused;
         let spawnTimer, spawnInterval, wolfTravel, nightT;
         let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul, beamPowerMul;
-        let disturbances, distSpawnTimer, distInterval, errand;
-        let owlSleepX, flash, lanternStationX, lanternReady;
+        let spots, distSpawnTimer, distInterval;
+        let keepFloorY, owlBedX, flash, lanternStationX, lanternReady;
         let overlapKind, overlapNext, overlapT;
         let rafId, lastTs;
         let dragging = false;
@@ -51,8 +52,29 @@
             fieldTop = H * 0.30;
             lanternY = wallY - unit * 0.14;
             layoutBushes();
-            owlSleepX = W * 0.16;
-            lanternStationX = W * 0.84;
+            layoutKeep();
+        }
+
+        // The day's castle-keep bedroom: fixed furniture, each a possible noise source.
+        function layoutKeep() {
+            keepFloorY = H * 0.80;
+            owlBedX = W * 0.16;
+            lanternStationX = W * 0.50;
+            const defs = [
+                { x: 0.30, vy: 0.60, kind: "books" },
+                { x: 0.40, vy: 0.74, kind: "dishes" },
+                { x: 0.64, vy: 0.78, kind: "mouse", hidden: true },
+                { x: 0.74, vy: 0.66, kind: "armor" },
+                { x: 0.88, vy: 0.20, kind: "window" }
+            ];
+            const keep = spots;   // preserve active state across resizes
+            spots = defs.map(function (d, i) {
+                return {
+                    x: W * d.x, vy: H * d.vy, kind: d.kind, hidden: !!d.hidden,
+                    active: keep && keep[i] ? keep[i].active : false,
+                    shake: Math.random() * 6.28, sndT: 0, rate: 0
+                };
+            });
         }
 
         function layoutBushes() {
@@ -84,8 +106,7 @@
             beamRangeMul = 1;
             beamPowerMul = 1;
             lanternReady = 0;
-            disturbances = [];
-            errand = null;
+            for (const s of spots) s.active = false;
             flash = 0;
             overlapNext = null;
             overlapT = 0;
@@ -115,8 +136,7 @@
             noise = 0;
             owlRested = true;
             lanternReady = 0;
-            disturbances = [];
-            errand = null;
+            for (const s of spots) s.active = false;
             ox = W / 2; targetX = ox; facing = 1;
             applyDay();
             distSpawnTimer = distInterval * 0.5;
@@ -139,40 +159,42 @@
             if (owlRested) { score += 3; host.setScore(score); }   // quiet-day bonus
             ox = W / 2; targetX = ox; facing = 1;
             beamActive = false; beamAngle = 0; beamTargetAngle = 0; pointerDown = false;
-            errand = null;
             spawnTimer = spawnInterval * 0.6;
             flash = 0.5;
             host.vibrate([20, 40, 20]);
             SGSound.play(owlRested ? "score" : "wrong");
         }
 
+        // Wake a random quiet item in the keep — it starts rattling.
         function spawnDisturbance() {
-            const types = ["bell", "rooster", "chatter"];
-            const type = types[Math.floor(Math.random() * types.length)];
-            disturbances.push({
-                x: W * (0.34 + Math.random() * 0.58),   // keep clear of the sleeping owl
-                type: type,
-                rate: (kids ? 5 : 8) + (night - 1) * 0.6,
-                shake: Math.random() * 6.28,
-                sndT: 0.9 + Math.random() * 0.5
-            });
-            playNoise(type);
+            const idle = spots.filter(function (s) { return !s.active; });
+            if (!idle.length) return;
+            const s = idle[Math.floor(Math.random() * idle.length)];
+            s.active = true;
+            s.sndT = 0.4 + Math.random() * 0.4;
+            s.rate = (kids ? 5 : 8) + (night - 1) * 0.6;
+            playNoise(s.kind);
         }
 
-        // Each noisy item has its own racket, repeated while it's left unhushed.
-        function playNoise(type) {
-            if (type === "bell") SGSound.play("note3");
-            else if (type === "rooster") SGSound.play("note0");
-            else SGSound.play("flip");
+        // Each item has its own racket, repeated while it's left unhushed.
+        function playNoise(kind) {
+            if (kind === "window") SGSound.play("note3");
+            else if (kind === "armor") SGSound.play("note1");
+            else if (kind === "dishes") SGSound.play("note2");
+            else if (kind === "books") SGSound.play("note0");
+            else SGSound.play("flip");   // mouse
         }
 
-        function hush(d) {
-            const idx = disturbances.indexOf(d);
-            if (idx >= 0) disturbances.splice(idx, 1);
+        function hush(s) {
+            if (!s.active) return;
+            s.active = false;
             noise = Math.max(0, noise - 6);
-            host.vibrate(8);
+            host.vibrate(12);
             SGSound.play("eat");
         }
+
+        function spotOf(kind) { for (const s of spots) if (s.kind === kind) return s; return null; }
+        function spotJitter(kind) { const s = spotOf(kind); return (s && s.active) ? Math.sin(s.shake) * unit * 0.006 : 0; }
 
         // Tending the lantern readies the night's beam — but it's noisy work.
         function tendLantern() {
@@ -181,12 +203,6 @@
             host.vibrate(10);
             SGSound.play("drop");
             if (noise >= NOISE_MAX && owlRested) wakeOwl();
-        }
-
-        function doErrand() {
-            if (errand.kind === "lantern") tendLantern();
-            else hush(errand.ref);
-            errand = null;
         }
 
         function wakeOwl() {
@@ -248,7 +264,7 @@
             overlapKind = kind;
             overlapNext = nextFn;
             overlapT = 0;
-            errand = null; dragging = false; pointerDown = false;
+            dragging = false; pointerDown = false;
             if (kind === "dawn" && hearts < START_HEARTS) hearts += 1;   // a good night's rest
             flash = 0.5;
             host.vibrate(20);
@@ -332,26 +348,21 @@
             dayT += dt;
             if (dayT >= DAY_MS / 1000) { enterOverlap("dusk", enterNight); return; }
 
-            // Walk an errand to its target, then act on arrival.
-            if (errand) {
-                const tx = errand.kind === "lantern" ? lanternStationX : errand.ref.x;
-                if (Math.abs(ox - tx) < unit * 0.12) doErrand();
-            }
-
-            // Spawn disturbances.
+            // Now and then a quiet item starts up.
             distSpawnTimer -= dt;
             if (distSpawnTimer <= 0) {
                 distSpawnTimer = distInterval * (0.7 + Math.random() * 0.6);
-                if (disturbances.length < 5) spawnDisturbance();
+                spawnDisturbance();
             }
 
-            // Active disturbances pump the noise up — and keep making a racket.
+            // Active items rattle — sound, a buzz of vibration, and rising noise.
             let rate = 0;
-            for (const d of disturbances) {
-                d.shake += dt * 16;
-                rate += d.rate;
-                d.sndT -= dt;
-                if (d.sndT <= 0) { d.sndT = 1.0 + Math.random() * 0.5; playNoise(d.type); }
+            for (const s of spots) {
+                if (!s.active) continue;
+                s.shake += dt * 16;
+                rate += s.rate;
+                s.sndT -= dt;
+                if (s.sndT <= 0) { s.sndT = 1.0 + Math.random() * 0.5; playNoise(s.kind); host.vibrate(6); }
             }
             if (rate > 0) noise = Math.min(NOISE_MAX, noise + rate * dt);
             else noise = Math.max(0, noise - dt * 4);
@@ -660,86 +671,197 @@
         }
 
         function drawDay() {
-            const sky = ctx.createLinearGradient(0, 0, 0, wallY);
-            sky.addColorStop(0, "#79b1e6");
-            sky.addColorStop(1, "#cfe6f3");
-            ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
-            drawSun();
+            const fy = keepFloorY;
+            // Warm stone back wall.
+            const wall = ctx.createLinearGradient(0, 0, 0, fy);
+            wall.addColorStop(0, "#caa978"); wall.addColorStop(1, "#b6926a");
+            ctx.fillStyle = wall; ctx.fillRect(0, 0, W, fy);
+            ctx.strokeStyle = "rgba(150,120,80,0.35)"; ctx.lineWidth = unit * 0.003;
+            for (let yy = H * 0.13; yy < fy; yy += unit * 0.1) { ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(W, yy); ctx.stroke(); }
+            drawBunting(H * 0.06);
+            drawKeepWindow(W * 0.58, H * 0.17, unit * 0.12, unit * 0.16, 0);
 
-            const grass = ctx.createLinearGradient(0, fieldTop, 0, wallY);
-            grass.addColorStop(0, "#7bb05a"); grass.addColorStop(1, "#5e9243");
-            ctx.fillStyle = grass; ctx.fillRect(0, fieldTop, W, wallY - fieldTop);
-            for (const b of bushes) drawBush(b.x, b.y);
+            // Wood floor + rug.
+            const floor = ctx.createLinearGradient(0, fy, 0, H);
+            floor.addColorStop(0, "#8a5e34"); floor.addColorStop(1, "#6e4a2a");
+            ctx.fillStyle = floor; ctx.fillRect(0, fy, W, H - fy);
+            ctx.strokeStyle = "rgba(110,74,42,0.5)"; ctx.lineWidth = unit * 0.003;
+            for (let x = 0; x < W; x += unit * 0.1) { ctx.beginPath(); ctx.moveTo(x, fy); ctx.lineTo(x, H); ctx.stroke(); }
+            drawRug(W * 0.46, fy + unit * 0.07);
 
-            drawSleepingOwl(owlSleepX);
-            drawBird(ox);
-            drawWall();
-            for (const d of disturbances) drawDisturbance(d);
+            // Noisy window on the wall (rattling shutter).
+            drawKeepWindow(W * 0.88 + spotJitter("window"), H * 0.11, unit * 0.11, unit * 0.18, 1);
+
+            // Furniture.
+            drawBookshelf(W * 0.30);
+            drawArmorStand(W * 0.74);
+            drawBed(owlBedX);
+            drawKeepTable(W * 0.42);
             drawLanternStation();
+            drawBarrels(W * 0.64);
+
+            for (const s of spots) if (s.active) drawSpotNoise(s);
+            drawBird(ox);
+            for (const s of spots) if (s.active && Math.abs(ox - s.x) < unit * HUSH_FRAC) drawHushPrompt(s);
+
             drawHUDDay();
 
-            if (night === 1 && dayT < 5.5) {
-                ctx.fillStyle = "rgba(38,38,58,0.92)"; ctx.textAlign = "center";
-                ctx.font = "600 " + Math.round(unit * 0.05) + "px Georgia, serif";
-                ctx.fillText("Daytime — keep the owl asleep", W / 2, fieldTop + unit * 0.14);
-                ctx.font = "500 " + Math.round(unit * 0.034) + "px Georgia, serif";
-                ctx.fillText("Hush each noise so the racket doesn't wake the owl", W / 2, fieldTop + unit * 0.20);
-                ctx.fillText("Tend the lantern (right) to ready tonight's beam — but it's noisy", W / 2, fieldTop + unit * 0.26);
+            if (night === 1 && dayT < 6) {
+                ctx.fillStyle = "rgba(40,32,22,0.92)"; ctx.textAlign = "center";
+                ctx.font = "600 " + Math.round(unit * 0.046) + "px Georgia, serif";
+                ctx.fillText("Quiet watch — let the owl sleep", W / 2, H * 0.30);
+                ctx.font = "500 " + Math.round(unit * 0.032) + "px Georgia, serif";
+                ctx.fillText("Walk to a rattling item and tap it — only works up close", W / 2, H * 0.37);
+                ctx.fillText("Tend the lantern on the table to ready tonight's beam", W / 2, H * 0.43);
             }
         }
 
+        function drawRug(cx, y) {
+            ctx.fillStyle = "#9a4a38"; ctx.beginPath(); ctx.ellipse(cx, y, unit * 0.24, unit * 0.045, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#c06a4f"; ctx.beginPath(); ctx.ellipse(cx, y, unit * 0.18, unit * 0.033, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#e0a24a"; ctx.beginPath(); ctx.ellipse(cx, y, unit * 0.08, unit * 0.015, 0, 0, 6.28); ctx.fill();
+        }
+
+        function drawKeepWindow(x, y, w, h, noisy) {
+            ctx.fillStyle = "#8a6a48"; roundRectFill(x - w / 2 - unit * 0.012, y - unit * 0.012, w + unit * 0.024, h + unit * 0.024, unit * 0.008);
+            const g = ctx.createLinearGradient(0, y, 0, y + h);
+            g.addColorStop(0, "#9fcaf0"); g.addColorStop(1, "#d6e9f6");
+            ctx.fillStyle = g; roundRectFill(x - w / 2, y, w, h, unit * 0.006);
+            ctx.strokeStyle = "#7a5a3a"; ctx.lineWidth = unit * 0.005;
+            ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + h); ctx.moveTo(x - w / 2, y + h * 0.5); ctx.lineTo(x + w / 2, y + h * 0.5); ctx.stroke();
+            if (noisy) { ctx.fillStyle = "#6e4a2a"; ctx.fillRect(x - w / 2 - unit * 0.02, y, unit * 0.018, h); }   // shutter
+        }
+
+        function drawBookshelf(x) {
+            x += spotJitter("books");
+            const fy = keepFloorY, w = unit * 0.14, h = unit * 0.34, rows = 4;
+            ctx.fillStyle = "#6e4a2a"; roundRectFill(x - w / 2, fy - h, w, h, unit * 0.006);
+            ctx.fillStyle = "#8a6238"; ctx.fillRect(x - w / 2 + unit * 0.006, fy - h + unit * 0.006, w - unit * 0.012, h - unit * 0.012);
+            const bcols = ["#b5543f", "#4f7a8c", "#caa24a", "#6a7a4a", "#9a5a86"];
+            for (let r = 0; r < rows; r++) {
+                const rowH = (h - unit * 0.02) / rows, sy = fy - h + unit * 0.01 + r * rowH, sh = rowH;
+                ctx.fillStyle = "#5e3f22"; ctx.fillRect(x - w / 2 + unit * 0.006, sy + sh - unit * 0.006, w - unit * 0.012, unit * 0.006);
+                let bx = x - w / 2 + unit * 0.012;
+                for (let b = 0; b < 5; b++) {
+                    const bw = unit * 0.02, bh = sh * (0.65 + ((r + b) % 3) * 0.12);
+                    ctx.fillStyle = bcols[(r * 2 + b) % 5];
+                    ctx.fillRect(bx, sy + sh - unit * 0.006 - bh, bw, bh);
+                    bx += bw + unit * 0.002;
+                }
+            }
+        }
+
+        function drawKeepTable(x) {
+            const fy = keepFloorY, tTop = fy - unit * 0.1, w = unit * 0.28, jit = spotJitter("dishes");
+            ctx.fillStyle = "#7a5230"; ctx.fillRect(x - w / 2, tTop - unit * 0.02, w, unit * 0.026);
+            ctx.fillStyle = "#6e4a2a";
+            ctx.fillRect(x - w / 2 + unit * 0.012, tTop, unit * 0.022, unit * 0.1);
+            ctx.fillRect(x + w / 2 - unit * 0.034, tTop, unit * 0.022, unit * 0.1);
+            // pancakes
+            const px = x - w * 0.3;
+            for (let i = 0; i < 3; i++) { ctx.fillStyle = "#e9b96a"; ctx.beginPath(); ctx.ellipse(px, tTop - unit * 0.026 - i * unit * 0.015, unit * 0.045, unit * 0.012, 0, 0, 6.28); ctx.fill(); }
+            ctx.fillStyle = "#a85a2a"; ctx.beginPath(); ctx.ellipse(px, tTop - unit * 0.026 - 2 * unit * 0.015, unit * 0.045, unit * 0.012, 0, 0, 3.14); ctx.fill();
+            ctx.fillStyle = "#ffe9a0"; ctx.fillRect(px - unit * 0.008, tTop - unit * 0.064, unit * 0.016, unit * 0.012);   // butter
+            // a jar + a mug (the rattling dishes)
+            ctx.fillStyle = "#5a4632"; ctx.fillRect(x - w * 0.02 + jit, tTop - unit * 0.052, unit * 0.034, unit * 0.052);
+            ctx.fillStyle = "#7a6a4a"; roundRectFill(x + w * 0.1 + jit, tTop - unit * 0.046, unit * 0.03, unit * 0.046, unit * 0.005);
+            ctx.strokeStyle = "#7a6a4a"; ctx.lineWidth = unit * 0.005;
+            ctx.beginPath(); ctx.arc(x + w * 0.13 + jit + unit * 0.03, tTop - unit * 0.022, unit * 0.012, -1.3, 1.3); ctx.stroke();
+        }
+
         function drawLanternStation() {
-            const x = lanternStationX, baseY = wallY - unit * 0.02;
-            ctx.fillStyle = "#5a4326"; ctx.fillRect(x - unit * 0.008, baseY - unit * 0.06, unit * 0.016, unit * 0.06);
-            const ly = baseY - unit * 0.085, ready = lanternReady / 100;
+            const x = lanternStationX, ly = keepFloorY - unit * 0.13, ready = lanternReady / 100;
             const g = ctx.createRadialGradient(x, ly, 1, x, ly, unit * 0.07);
-            g.addColorStop(0, "rgba(255,225,150," + (0.25 + ready * 0.65) + ")"); g.addColorStop(1, "rgba(255,206,120,0)");
+            g.addColorStop(0, "rgba(255,225,150," + (0.22 + ready * 0.66) + ")"); g.addColorStop(1, "rgba(255,206,120,0)");
             ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, ly, unit * 0.07, 0, 6.28); ctx.fill();
             ctx.fillStyle = "#4a3a26"; ctx.fillRect(x - unit * 0.024, ly - unit * 0.028, unit * 0.048, unit * 0.008);
             ctx.fillStyle = "#6e5a38"; roundRectFill(x - unit * 0.018, ly - unit * 0.02, unit * 0.036, unit * 0.05, unit * 0.006);
             ctx.fillStyle = ready > 0.05 ? "#ffe39a" : "#3a3322"; roundRectFill(x - unit * 0.012, ly - unit * 0.012, unit * 0.024, unit * 0.034, unit * 0.004);
         }
 
-        function drawSun() {
-            const sx = W * 0.82, sy = H * 0.16, sr = unit * 0.06;
-            const g = ctx.createRadialGradient(sx, sy, sr * 0.5, sx, sy, sr * 2.6);
-            g.addColorStop(0, "rgba(255,244,200,0.9)"); g.addColorStop(1, "rgba(255,244,200,0)");
-            ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, sr * 2.6, 0, 6.28); ctx.fill();
-            ctx.fillStyle = "#ffe9a0"; ctx.beginPath(); ctx.arc(sx, sy, sr, 0, 6.28); ctx.fill();
+        function drawBarrels(x) {
+            const fy = keepFloorY, jit = spotJitter("mouse"), ms = spotOf("mouse");
+            // The mouse hides behind the barrels — only its sound (and a peek) shows.
+            if (ms && ms.active) {
+                ctx.fillStyle = "#7a6a66";
+                ctx.beginPath(); ctx.ellipse(x + unit * 0.07 + jit, fy - unit * 0.015, unit * 0.02, unit * 0.012, 0, 0, 6.28); ctx.fill();
+                ctx.strokeStyle = "#7a6a66"; ctx.lineWidth = unit * 0.004;
+                ctx.beginPath(); ctx.moveTo(x + unit * 0.085 + jit, fy - unit * 0.015); ctx.quadraticCurveTo(x + unit * 0.12, fy - unit * 0.03, x + unit * 0.1, fy); ctx.stroke();
+            }
+            function barrel(bx, bw, bh) {
+                ctx.fillStyle = "#8a5a32"; roundRectFill(bx - bw / 2, fy - bh, bw, bh, unit * 0.012);
+                ctx.fillStyle = "#9a6a40"; ctx.fillRect(bx - bw / 2, fy - bh * 0.92, bw, bh * 0.84);
+                ctx.strokeStyle = "#4a3018"; ctx.lineWidth = unit * 0.005;
+                ctx.beginPath(); ctx.moveTo(bx - bw / 2, fy - bh * 0.72); ctx.lineTo(bx + bw / 2, fy - bh * 0.72);
+                ctx.moveTo(bx - bw / 2, fy - bh * 0.32); ctx.lineTo(bx + bw / 2, fy - bh * 0.32); ctx.stroke();
+            }
+            barrel(x - unit * 0.04, unit * 0.075, unit * 0.12);
+            barrel(x + unit * 0.04, unit * 0.07, unit * 0.105);
         }
 
-        function drawSleepingOwl(x) {
-            const baseY = wallY, h = unit * 0.17;
-            const bodyH = h * 0.62, bodyCy = baseY - bodyH * 0.5;
-            const headR = h * 0.4, headCy = bodyCy - bodyH * 0.5;
-            ctx.fillStyle = "#8a92a0";
-            ctx.beginPath(); ctx.ellipse(x, bodyCy, h * 0.5, bodyH * 0.6, 0, 0, 6.28); ctx.fill();
-            ctx.fillStyle = "#8a6840"; ctx.beginPath(); ctx.arc(x, headCy, headR, 0, 6.28); ctx.fill();
-            // nightcap
-            ctx.fillStyle = "#6a6aa8";
-            ctx.beginPath();
-            ctx.moveTo(x - headR * 0.95, headCy - headR * 0.1);
-            ctx.quadraticCurveTo(x - headR * 0.2, headCy - headR * 1.7, x + headR * 1.2, headCy - headR * 1.2);
-            ctx.quadraticCurveTo(x + headR * 0.2, headCy - headR * 0.55, x + headR * 0.95, headCy - headR * 0.1);
+        function drawArmorStand(x) {
+            x += spotJitter("armor");
+            const fy = keepFloorY;
+            ctx.fillStyle = "#4a3a26"; ctx.fillRect(x - unit * 0.006, fy - unit * 0.16, unit * 0.012, unit * 0.16);
+            ctx.beginPath(); ctx.moveTo(x - unit * 0.04, fy); ctx.lineTo(x + unit * 0.04, fy); ctx.lineTo(x, fy - unit * 0.02); ctx.fill();
+            ctx.fillStyle = "#9aa1ad"; roundRectFill(x - unit * 0.05, fy - unit * 0.15, unit * 0.1, unit * 0.09, unit * 0.02);
+            ctx.fillStyle = "#7e8694"; ctx.fillRect(x - unit * 0.012, fy - unit * 0.15, unit * 0.024, unit * 0.09);
+            ctx.fillStyle = "#aab1bd"; ctx.beginPath(); ctx.arc(x, fy - unit * 0.165, unit * 0.034, Math.PI, 0); ctx.fill();
+            ctx.fillRect(x - unit * 0.034, fy - unit * 0.165, unit * 0.068, unit * 0.018);
+            ctx.fillStyle = "#878e9c"; ctx.fillRect(x - unit * 0.006, fy - unit * 0.18, unit * 0.012, unit * 0.026);
+        }
+
+        function drawBed(x) {
+            const fy = keepFloorY, w = unit * 0.24, hb = unit * 0.16;
+            ctx.fillStyle = "#6e4a2a"; roundRectFill(x - w * 0.5, fy - hb, unit * 0.028, hb, unit * 0.008);
+            ctx.fillStyle = "#7a5230"; ctx.fillRect(x - w * 0.5, fy - unit * 0.05, w, unit * 0.05);
+            ctx.fillStyle = "#efe6cf"; roundRectFill(x - w * 0.46, fy - unit * 0.075, w * 0.92, unit * 0.03, unit * 0.008);
+            // patchwork quilt
+            const qx = x - w * 0.16, qy = fy - unit * 0.07, qw = w * 0.6, qh = unit * 0.05;
+            const cols = ["#9a5a86", "#5f7a8c", "#b5543f", "#6a7a4a"];
+            for (let i = 0; i < 4; i++) { ctx.fillStyle = cols[i]; roundRectFill(qx + i * qw / 4, qy, qw / 4 - 1, qh, 2); }
+            ctx.fillStyle = "#f4eeda"; roundRectFill(x - w * 0.46, fy - unit * 0.078, unit * 0.05, unit * 0.03, unit * 0.01);
+            // sleeping owl head on the pillow
+            const hx = x - w * 0.38, hy = fy - unit * 0.088, hr = unit * 0.034;
+            ctx.fillStyle = "#8a6840"; ctx.beginPath(); ctx.arc(hx, hy, hr, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#6a6aa8"; ctx.beginPath();
+            ctx.moveTo(hx - hr * 0.9, hy - hr * 0.1);
+            ctx.quadraticCurveTo(hx, hy - hr * 2, hx + hr * 1.4, hy - hr * 0.9);
+            ctx.quadraticCurveTo(hx + hr * 0.2, hy - hr * 0.4, hx + hr * 0.9, hy - hr * 0.1);
             ctx.closePath(); ctx.fill();
-            ctx.fillStyle = "#ececf8"; ctx.beginPath(); ctx.arc(x + headR * 1.2, headCy - headR * 1.2, headR * 0.22, 0, 6.28); ctx.fill();
-            // closed eyes
-            ctx.strokeStyle = "#3a2412"; ctx.lineWidth = h * 0.018; ctx.lineCap = "round";
-            ctx.beginPath();
-            ctx.moveTo(x - headR * 0.5, headCy + headR * 0.1); ctx.quadraticCurveTo(x - headR * 0.3, headCy + headR * 0.3, x - headR * 0.1, headCy + headR * 0.1);
-            ctx.moveTo(x + headR * 0.1, headCy + headR * 0.1); ctx.quadraticCurveTo(x + headR * 0.3, headCy + headR * 0.3, x + headR * 0.5, headCy + headR * 0.1);
-            ctx.stroke();
+            ctx.fillStyle = "#ececf8"; ctx.beginPath(); ctx.arc(hx + hr * 1.4, hy - hr * 0.9, hr * 0.26, 0, 6.28); ctx.fill();
+            ctx.strokeStyle = "#3a2412"; ctx.lineWidth = unit * 0.004; ctx.lineCap = "round";
+            ctx.beginPath(); ctx.moveTo(hx - hr * 0.35, hy + hr * 0.05); ctx.quadraticCurveTo(hx - hr * 0.18, hy + hr * 0.25, hx - hr * 0.02, hy + hr * 0.05); ctx.stroke();
             ctx.fillStyle = "#d98a34"; ctx.beginPath();
-            ctx.moveTo(x - headR * 0.12, headCy + headR * 0.4); ctx.lineTo(x + headR * 0.12, headCy + headR * 0.4); ctx.lineTo(x, headCy + headR * 0.62); ctx.fill();
-            // Zzz drifting up
+            ctx.moveTo(hx - hr * 0.12, hy + hr * 0.28); ctx.lineTo(hx + hr * 0.12, hy + hr * 0.28); ctx.lineTo(hx, hy + hr * 0.5); ctx.fill();
             const zt = (Date.now() % 2600) / 2600;
             ctx.fillStyle = "rgba(60,60,90," + (0.85 - zt * 0.7) + ")";
-            ctx.font = "600 " + Math.round(h * (0.2 + zt * 0.12)) + "px Georgia, serif"; ctx.textAlign = "left";
-            ctx.fillText("z", x + headR * 1.0, headCy - headR * 1.3 - zt * h * 0.4);
+            ctx.font = "600 " + Math.round(unit * 0.03 * (1 + zt * 0.4)) + "px Georgia, serif"; ctx.textAlign = "left";
+            ctx.fillText("z", hx + hr * 1.3, hy - hr * 1.9 - zt * unit * 0.03);
+        }
+
+        function drawSpotNoise(s) {
+            const x = s.x, y = s.vy, ring = (s.shake % 6.28) / 6.28;
+            ctx.strokeStyle = "rgba(255,90,70,0.6)"; ctx.lineWidth = unit * 0.005;
+            for (let k = 0; k < 2; k++) {
+                const r = unit * 0.025 + ((ring + k * 0.5) % 1) * unit * 0.05;
+                ctx.beginPath(); ctx.arc(x, y, r, -1.1, 1.1); ctx.stroke();
+                ctx.beginPath(); ctx.arc(x, y, r, Math.PI - 1.1, Math.PI + 1.1); ctx.stroke();
+            }
+            ctx.fillStyle = "#ff5a46"; ctx.font = "700 " + Math.round(unit * 0.038) + "px Georgia, serif"; ctx.textAlign = "center";
+            ctx.fillText("!", x, y - unit * 0.03);
+        }
+
+        function drawHushPrompt(s) {
+            const pulse = 0.45 + 0.4 * Math.sin(Date.now() / 240);
+            ctx.strokeStyle = "rgba(130,235,130," + pulse + ")"; ctx.lineWidth = unit * 0.006;
+            ctx.beginPath(); ctx.arc(s.x, s.vy, unit * 0.055, 0, 6.28); ctx.stroke();
+            ctx.fillStyle = "rgba(130,235,130," + pulse + ")"; ctx.font = "600 " + Math.round(unit * 0.026) + "px Georgia, serif"; ctx.textAlign = "center";
+            ctx.fillText("tap!", s.x, s.vy + unit * 0.085);
         }
 
         function drawBird(x) {
-            const s = unit * 0.07, cy = wallY - s * 0.7;
+            const s = unit * 0.07, cy = keepFloorY - s * 0.7;
             ctx.save(); ctx.translate(x, cy); ctx.scale(facing, 1);
             ctx.fillStyle = "#7c5230"; ctx.beginPath(); ctx.ellipse(0, 0, s * 0.5, s * 0.6, 0, 0, 6.28); ctx.fill();
             ctx.fillStyle = "#db7f37"; ctx.beginPath(); ctx.ellipse(s * 0.12, s * 0.1, s * 0.32, s * 0.42, 0, 0, 6.28); ctx.fill();
@@ -751,32 +873,6 @@
             ctx.fillStyle = "#e09a33"; ctx.beginPath();
             ctx.moveTo(s * 0.4, -s * 0.5); ctx.lineTo(s * 0.62, -s * 0.45); ctx.lineTo(s * 0.4, -s * 0.38); ctx.fill();
             ctx.restore();
-        }
-
-        function drawDisturbance(d) {
-            const sh = Math.sin(d.shake) * unit * 0.006;
-            const x = d.x + sh, y = wallY - unit * 0.03, s = unit * 0.05;
-            // a sound arc that pulses
-            const ring = (d.shake % 6.28) / 6.28;
-            ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = unit * 0.004;
-            ctx.beginPath(); ctx.arc(x, y - s * 0.6, s * (0.6 + ring * 0.9), -1.2, 1.2); ctx.stroke();
-            if (d.type === "bell") {
-                ctx.fillStyle = "#e8b84a"; ctx.beginPath();
-                ctx.moveTo(x - s * 0.4, y); ctx.quadraticCurveTo(x - s * 0.4, y - s * 0.7, x, y - s * 0.7);
-                ctx.quadraticCurveTo(x + s * 0.4, y - s * 0.7, x + s * 0.4, y); ctx.closePath(); ctx.fill();
-                ctx.fillStyle = "#8a6a1f"; ctx.beginPath(); ctx.arc(x, y + s * 0.05, s * 0.1, 0, 6.28); ctx.fill();
-            } else if (d.type === "rooster") {
-                ctx.fillStyle = "#b5543f"; ctx.beginPath(); ctx.ellipse(x, y - s * 0.2, s * 0.34, s * 0.42, 0, 0, 6.28); ctx.fill();
-                ctx.fillStyle = "#e0533a";
-                ctx.beginPath(); ctx.arc(x - s * 0.06, y - s * 0.6, s * 0.1, 0, 6.28); ctx.arc(x + s * 0.06, y - s * 0.62, s * 0.1, 0, 6.28); ctx.fill();
-                ctx.fillStyle = "#e0a24a"; ctx.beginPath();
-                ctx.moveTo(x + s * 0.3, y - s * 0.3); ctx.lineTo(x + s * 0.55, y - s * 0.25); ctx.lineTo(x + s * 0.3, y - s * 0.18); ctx.fill();
-            } else {
-                ctx.fillStyle = "#f2efe2"; ctx.beginPath(); ctx.ellipse(x, y - s * 0.3, s * 0.4, s * 0.3, 0, 0, 6.28); ctx.fill();
-                ctx.beginPath(); ctx.moveTo(x - s * 0.1, y); ctx.lineTo(x + s * 0.1, y); ctx.lineTo(x - s * 0.15, y - s * 0.2); ctx.fill();
-                ctx.fillStyle = "#9a8f72";
-                for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.arc(x + k * s * 0.16, y - s * 0.3, s * 0.05, 0, 6.28); ctx.fill(); }
-            }
         }
 
         /* ---------- Overlap (tower hand-off) ---------- */
@@ -919,16 +1015,19 @@
             // Night: light + aim the beam.
             pointerDown = true; started = true; aimBeam(x);
         }
-        function onDownDay(x, y) {
-            for (const d of disturbances) {
-                if (Math.hypot(x - d.x, y - (wallY - unit * 0.03)) <= unit * 0.08) { errand = { kind: "hush", ref: d }; targetX = clampX(d.x); return; }
+        function onDownDay(x) {
+            // Hush a rattling item only if the bird is standing close to it.
+            for (const s of spots) {
+                if (s.active && Math.abs(x - s.x) < unit * 0.1 && Math.abs(ox - s.x) < unit * HUSH_FRAC) { hush(s); return; }
             }
-            if (Math.hypot(x - lanternStationX, y - (wallY - unit * 0.05)) <= unit * 0.09) { errand = { kind: "lantern" }; targetX = clampX(lanternStationX); return; }
-            errand = null; dragging = true; targetX = clampX(x);
+            // Tend the lantern when up close.
+            if (Math.abs(x - lanternStationX) < unit * 0.1 && Math.abs(ox - lanternStationX) < unit * HUSH_FRAC) { tendLantern(); return; }
+            // Otherwise, walk toward the tap.
+            dragging = true; targetX = clampX(x);
         }
         function onMove(x) {
             if (phase === "night") { if (pointerDown) aimBeam(x); return; }
-            if (dragging) { targetX = clampX(x); errand = null; }
+            if (dragging) targetX = clampX(x);
         }
         function onUp() { dragging = false; pointerDown = false; }
 
