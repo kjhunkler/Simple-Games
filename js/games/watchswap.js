@@ -21,11 +21,17 @@
         const OIL_MAX = kids ? 130 : 100;
         const OIL_DRAIN = kids ? 2.0 : 3.4;    // per lit torch, per second
         const TORCH_HALF = 0.34;               // torch light-cone half-angle
+        const DAY_MS = kids ? 32000 : 36000;
+        const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
+        const NOISE_MAX = 100;
 
         let W, H, unit, wallY, fieldTop, lanternY, ox, targetX, facing;
         let bushes, wolves, torches, oil, hearts, score, night;
         let lanternOut, started, alive, paused;
         let spawnTimer, spawnInterval, wolfTravel, nightT;
+        let phase, dayT, noise, owlRested, beamHalfMul, beamRangeMul;
+        let disturbances, distSpawnTimer, distInterval, errand;
+        let owlSleepX, oilBarrel, flash;
         let rafId, lastTs;
         let dragging = false;
         const keys = { left: false, right: false };
@@ -47,6 +53,8 @@
             stow = { x: W - r - unit * 0.05, y: H - r - unit * 0.05, r: r };
             layoutBushes();
             layoutTorches();
+            owlSleepX = W * 0.16;
+            oilBarrel = { x: W * 0.84 };
         }
 
         function layoutBushes() {
@@ -81,6 +89,15 @@
             nightT = 0;
             oil = OIL_MAX;
             for (const t of torches) t.lit = false;
+            phase = "night";
+            dayT = 0;
+            noise = 0;
+            owlRested = true;
+            beamHalfMul = 1;
+            beamRangeMul = 1;
+            disturbances = [];
+            errand = null;
+            flash = 0;
             applyNight();
             spawnTimer = spawnInterval * 0.6;
             lastTs = 0;
@@ -92,6 +109,87 @@
             const n = night - 1;
             spawnInterval = Math.max(kids ? 1.5 : 1.0, (kids ? 3.2 : 2.3) - n * 0.22);
             wolfTravel = Math.max(kids ? 6.5 : 4.4, (kids ? 9.5 : 7.2) - n * 0.45); // seconds tree→wall
+        }
+        function applyDay() {
+            distInterval = Math.max(kids ? 2.4 : 1.7, (kids ? 3.8 : 2.9) - (night - 1) * 0.18);
+        }
+
+        // Dawn: the night is survived — hand off to the Early Bird's day watch.
+        function enterDay() {
+            phase = "day";
+            dayT = 0;
+            score += 5;                 // survived the night
+            host.setScore(score);
+            wolves = [];
+            noise = 0;
+            owlRested = true;
+            disturbances = [];
+            errand = null;
+            ox = W / 2; targetX = ox; facing = 1;
+            applyDay();
+            distSpawnTimer = distInterval * 0.5;
+            flash = 0.5;
+            host.vibrate([20, 40, 20]);
+            SGSound.play("score");
+        }
+
+        // Dusk: hand the watch back to the Owl. A kept-awake owl guards poorly.
+        function enterNight() {
+            phase = "night";
+            night += 1;
+            applyNight();
+            nightT = 0;
+            wolves = [];
+            for (const t of torches) t.lit = false;
+            beamHalfMul = owlRested ? 1 : 0.62;
+            beamRangeMul = owlRested ? 1 : 0.68;
+            if (owlRested) { score += 3; host.setScore(score); }   // quiet-day bonus
+            ox = W / 2; targetX = ox; facing = 1;
+            lanternOut = true;
+            errand = null;
+            spawnTimer = spawnInterval * 0.6;
+            flash = 0.5;
+            host.vibrate([20, 40, 20]);
+            SGSound.play(owlRested ? "score" : "wrong");
+        }
+
+        function spawnDisturbance() {
+            const types = ["bell", "rooster", "chatter"];
+            disturbances.push({
+                x: W * (0.34 + Math.random() * 0.58),   // keep clear of the sleeping owl
+                type: types[Math.floor(Math.random() * types.length)],
+                rate: (kids ? 5 : 8) + (night - 1) * 0.6,
+                shake: Math.random() * 6.28
+            });
+        }
+
+        function hush(d) {
+            const idx = disturbances.indexOf(d);
+            if (idx >= 0) disturbances.splice(idx, 1);
+            noise = Math.max(0, noise - 6);
+            host.vibrate(8);
+            SGSound.play("flip");
+        }
+
+        function refillOil() {
+            oil = OIL_MAX;
+            noise = Math.min(NOISE_MAX, noise + 14);   // hauling oil is noisy
+            host.vibrate(12);
+            SGSound.play("drop");
+            if (noise >= NOISE_MAX && owlRested) wakeOwl();
+        }
+
+        function doErrand() {
+            if (errand.kind === "oil") refillOil();
+            else hush(errand.ref);
+            errand = null;
+        }
+
+        function wakeOwl() {
+            owlRested = false;   // locked in — the owl will guard poorly tonight
+            flash = 0.6;
+            host.vibrate([60, 40, 60]);
+            SGSound.play("wrong");
         }
 
         function spawnWolf() {
@@ -135,9 +233,9 @@
             const dy = lanternY - w.y;            // positive = above the owl
             if (dy <= 0) return false;
             const dist = Math.hypot(dx, dy);
-            if (dist > unit * 1.5) return false;
+            if (dist > unit * 1.5 * beamRangeMul) return false;
             const ang = Math.atan2(Math.abs(dx), dy); // 0 = straight up
-            return ang < BEAM_HALF;
+            return ang < BEAM_HALF * beamHalfMul;
         }
 
         // Lit by any wall torch's stationary cone?
@@ -156,8 +254,13 @@
 
         /* ---------- Update ---------- */
         function update(dt) {
-            // Move the owl toward the target.
-            const speed = (lanternOut ? SLOW_FRAC : FAST_FRAC) * W;
+            if (flash > 0) flash = Math.max(0, flash - dt);
+            if (phase === "night") updateNight(dt);
+            else updateDay(dt);
+        }
+
+        function moveGuard(speedFrac, dt) {
+            const speed = speedFrac * W;
             if (keys.left) targetX = W * 0.06;
             else if (keys.right) targetX = W * 0.94;
             const dx = targetX - ox;
@@ -166,21 +269,14 @@
                 ox += move;
                 facing = Math.sign(dx);
             }
+        }
 
+        function updateNight(dt) {
+            moveGuard(lanternOut ? SLOW_FRAC : FAST_FRAC, dt);
             if (!started) return;
 
-            // Advance the night clock.
             nightT += dt;
-            if (nightT >= NIGHT_MS / 1000) {
-                night += 1;
-                nightT = 0;
-                score += 5;                       // survived-the-night bonus
-                oil = OIL_MAX;                     // dawn tops up the oil store
-                host.setScore(score);
-                host.vibrate([20, 40, 20]);
-                SGSound.play("score");
-                applyNight();
-            }
+            if (nightT >= NIGHT_MS / 1000) { enterDay(); return; }
 
             // Lit torches burn oil; when it runs dry they gutter out.
             let litCount = 0;
@@ -221,6 +317,33 @@
             }
         }
 
+        function updateDay(dt) {
+            moveGuard(DAY_SPEED, dt);
+
+            dayT += dt;
+            if (dayT >= DAY_MS / 1000) { enterNight(); return; }
+
+            // Walk an errand to its target, then act on arrival.
+            if (errand) {
+                const tx = errand.kind === "oil" ? oilBarrel.x : errand.ref.x;
+                if (Math.abs(ox - tx) < unit * 0.1) doErrand();
+            }
+
+            // Spawn disturbances.
+            distSpawnTimer -= dt;
+            if (distSpawnTimer <= 0) {
+                distSpawnTimer = distInterval * (0.7 + Math.random() * 0.6);
+                if (disturbances.length < 5) spawnDisturbance();
+            }
+
+            // Active disturbances pump the noise up; quiet lets it settle.
+            let rate = 0;
+            for (const d of disturbances) { d.shake += dt * 16; rate += d.rate; }
+            if (rate > 0) noise = Math.min(NOISE_MAX, noise + rate * dt);
+            else noise = Math.max(0, noise - dt * 4);
+            if (noise >= NOISE_MAX && owlRested) wakeOwl();
+        }
+
         function scare(w) {
             if (w.state === "flee") return;
             w.state = "flee";
@@ -243,6 +366,15 @@
 
         /* ---------- Drawing ---------- */
         function draw() {
+            if (phase === "night") drawNight();
+            else drawDay();
+            if (flash > 0) {
+                ctx.fillStyle = "rgba(255,247,235," + (flash * 0.5) + ")";
+                ctx.fillRect(0, 0, W, H);
+            }
+        }
+
+        function drawNight() {
             // Sky
             const sky = ctx.createLinearGradient(0, 0, 0, wallY);
             sky.addColorStop(0, "#13153a");
@@ -346,12 +478,14 @@
         }
 
         function drawBeam() {
-            const len = unit * 1.4;
+            const half = BEAM_HALF * beamHalfMul;
+            const len = unit * 1.4 * beamRangeMul;
             const ax = ox, ay = lanternY;
-            const lx = ax - Math.sin(BEAM_HALF) * len, rx = ax + Math.sin(BEAM_HALF) * len;
-            const ty = ay - Math.cos(BEAM_HALF) * len;
+            const lx = ax - Math.sin(half) * len, rx = ax + Math.sin(half) * len;
+            const ty = ay - Math.cos(half) * len;
             const g = ctx.createLinearGradient(ax, ay, ax, ty);
-            g.addColorStop(0, "rgba(255,231,168,0.34)");
+            const a = beamRangeMul < 1 ? 0.22 : 0.34;   // a tired owl's beam is dimmer
+            g.addColorStop(0, "rgba(255,231,168," + a + ")");
             g.addColorStop(1, "rgba(255,231,168,0)");
             ctx.fillStyle = g;
             ctx.beginPath();
@@ -484,14 +618,9 @@
             ctx.fill();
         }
 
-        function drawHUD() {
-            // Hearts (top-left)
-            const hr = unit * 0.025;
-            for (let i = 0; i < START_HEARTS; i++) heart(unit * 0.06 + i * hr * 3, unit * 0.05, hr, i < hearts);
-
-            // Oil gauge (top-right)
+        function drawOilGauge(labelColor) {
             const ogw = unit * 0.22, ogh = unit * 0.028, ogx = W - ogw - unit * 0.05, ogy = unit * 0.045;
-            ctx.fillStyle = "rgba(242,243,255,0.8)";
+            ctx.fillStyle = labelColor;
             ctx.font = "600 " + Math.round(unit * 0.028) + "px Georgia, serif";
             ctx.textAlign = "right";
             ctx.fillText("oil", ogx - unit * 0.012, ogy + ogh * 0.85);
@@ -500,35 +629,177 @@
             ctx.fillStyle = oil > OIL_MAX * 0.25 ? "#e0922e" : "#e05a3a";
             if (oil > 0) roundRectFill(ogx, ogy, ogw * (oil / OIL_MAX), ogh, ogh * 0.5);
             ctx.textAlign = "center";
+        }
 
-            // Sun→moon dial arc (top-center) with the night's progress token
+        // Sun→moon arc with a token showing how far through the phase we are.
+        function drawDial(p, label, labelColor) {
+            p = Math.min(1, p);
             const cx = W / 2, ay = unit * 0.07, aw = unit * 0.34, ah = unit * 0.05;
-            ctx.strokeStyle = "rgba(216,195,154,0.8)"; ctx.lineWidth = unit * 0.012;
+            ctx.strokeStyle = "rgba(216,195,154,0.85)"; ctx.lineWidth = unit * 0.012;
             ctx.beginPath(); ctx.moveTo(cx - aw, ay); ctx.quadraticCurveTo(cx, ay - ah, cx + aw, ay); ctx.stroke();
             ctx.fillStyle = "#ffd86a"; ctx.beginPath(); ctx.arc(cx - aw, ay, unit * 0.014, 0, 6.28); ctx.fill();
             ctx.fillStyle = "#eef0ff"; ctx.beginPath(); ctx.arc(cx + aw, ay, unit * 0.016, 0, 6.28); ctx.fill();
-            // token rides dusk(left)→dawn(right)
-            const p = Math.min(1, nightT / (NIGHT_MS / 1000)), tx = cx - aw + p * aw * 2;
-            const ty = ay - ah * (1 - (2 * p - 1) * (2 * p - 1));
+            const tx = cx - aw + p * aw * 2, ty = ay - ah * (1 - (2 * p - 1) * (2 * p - 1));
             ctx.fillStyle = "#fff1c0"; ctx.strokeStyle = "#c98a2e"; ctx.lineWidth = 2;
             ctx.beginPath(); ctx.arc(tx, ty, unit * 0.018, 0, 6.28); ctx.fill(); ctx.stroke();
-
-            ctx.fillStyle = "rgba(242,243,255,0.85)";
+            ctx.fillStyle = labelColor;
             ctx.font = "600 " + Math.round(unit * 0.032) + "px Georgia, serif";
             ctx.textAlign = "center";
-            ctx.fillText("Night " + night, cx, ay + unit * 0.06);
+            ctx.fillText(label, cx, ay + unit * 0.06);
+        }
+
+        function drawNoiseMeter() {
+            const bw = unit * 0.26, bh = unit * 0.03, bx = unit * 0.06, by = unit * 0.055;
+            ctx.fillStyle = "rgba(40,40,60,0.9)";
+            ctx.font = "600 " + Math.round(unit * 0.028) + "px Georgia, serif";
+            ctx.textAlign = "left";
+            ctx.fillText("noise", bx, by - unit * 0.012);
+            ctx.fillStyle = "rgba(120,110,90,0.4)"; roundRectFill(bx, by, bw, bh, bh * 0.5);
+            const p = noise / NOISE_MAX;
+            ctx.fillStyle = p > 0.75 ? "#e0503a" : "#e0922e";
+            if (p > 0) roundRectFill(bx, by, bw * p, bh, bh * 0.5);
+            ctx.textAlign = "center";
+        }
+
+        function drawHUD() {
+            const hr = unit * 0.025;
+            for (let i = 0; i < START_HEARTS; i++) heart(unit * 0.06 + i * hr * 3, unit * 0.05, hr, i < hearts);
+            drawOilGauge("rgba(242,243,255,0.85)");
+            drawDial(nightT / (NIGHT_MS / 1000), "Night " + night, "rgba(242,243,255,0.85)");
 
             // Stow / lantern button (bottom-right)
             ctx.fillStyle = lanternOut ? "rgba(205,184,134,0.95)" : "rgba(120,110,150,0.95)";
             ctx.strokeStyle = "#8a6d3f"; ctx.lineWidth = unit * 0.008;
             ctx.beginPath(); ctx.arc(stow.x, stow.y, stow.r, 0, 6.28); ctx.fill(); ctx.stroke();
-            // little lantern glyph
             ctx.fillStyle = "#6e5a38"; ctx.fillRect(stow.x - stow.r * 0.22, stow.y - stow.r * 0.35, stow.r * 0.44, stow.r * 0.6);
             ctx.fillStyle = lanternOut ? "#fff0b0" : "#3a3322";
             ctx.fillRect(stow.x - stow.r * 0.13, stow.y - stow.r * 0.22, stow.r * 0.26, stow.r * 0.4);
             ctx.fillStyle = lanternOut ? "#5a4326" : "#ffe9c2";
             ctx.font = "600 " + Math.round(unit * 0.026) + "px Georgia, serif";
             ctx.fillText(lanternOut ? "stow" : "light", stow.x, stow.y + stow.r * 1.5);
+        }
+
+        function drawHUDDay() {
+            drawNoiseMeter();
+            drawOilGauge("rgba(40,40,60,0.9)");
+            drawDial(dayT / (DAY_MS / 1000), "Day " + night, "rgba(40,40,60,0.9)");
+        }
+
+        function drawDay() {
+            const sky = ctx.createLinearGradient(0, 0, 0, wallY);
+            sky.addColorStop(0, "#79b1e6");
+            sky.addColorStop(1, "#cfe6f3");
+            ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+            drawSun();
+
+            const grass = ctx.createLinearGradient(0, fieldTop, 0, wallY);
+            grass.addColorStop(0, "#7bb05a"); grass.addColorStop(1, "#5e9243");
+            ctx.fillStyle = grass; ctx.fillRect(0, fieldTop, W, wallY - fieldTop);
+            for (const b of bushes) drawBush(b.x, b.y);
+
+            drawSleepingOwl(owlSleepX);
+            drawBird(ox);
+            drawWall();
+            for (const d of disturbances) drawDisturbance(d);
+            drawOilBarrel();
+            drawHUDDay();
+
+            if (night === 1 && dayT < 4.5) {
+                ctx.fillStyle = "rgba(38,38,58,0.92)"; ctx.textAlign = "center";
+                ctx.font = "600 " + Math.round(unit * 0.05) + "px Georgia, serif";
+                ctx.fillText("Daytime — keep the owl asleep", W / 2, fieldTop + unit * 0.15);
+                ctx.font = "500 " + Math.round(unit * 0.036) + "px Georgia, serif";
+                ctx.fillText("Tap a noise to hush it · tap the oil barrel to refill for tonight", W / 2, fieldTop + unit * 0.22);
+            }
+        }
+
+        function drawSun() {
+            const sx = W * 0.82, sy = H * 0.16, sr = unit * 0.06;
+            const g = ctx.createRadialGradient(sx, sy, sr * 0.5, sx, sy, sr * 2.6);
+            g.addColorStop(0, "rgba(255,244,200,0.9)"); g.addColorStop(1, "rgba(255,244,200,0)");
+            ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, sr * 2.6, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#ffe9a0"; ctx.beginPath(); ctx.arc(sx, sy, sr, 0, 6.28); ctx.fill();
+        }
+
+        function drawSleepingOwl(x) {
+            const baseY = wallY, h = unit * 0.17;
+            const bodyH = h * 0.62, bodyCy = baseY - bodyH * 0.5;
+            const headR = h * 0.4, headCy = bodyCy - bodyH * 0.5;
+            ctx.fillStyle = "#8a92a0";
+            ctx.beginPath(); ctx.ellipse(x, bodyCy, h * 0.5, bodyH * 0.6, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#8a6840"; ctx.beginPath(); ctx.arc(x, headCy, headR, 0, 6.28); ctx.fill();
+            // nightcap
+            ctx.fillStyle = "#6a6aa8";
+            ctx.beginPath();
+            ctx.moveTo(x - headR * 0.95, headCy - headR * 0.1);
+            ctx.quadraticCurveTo(x - headR * 0.2, headCy - headR * 1.7, x + headR * 1.2, headCy - headR * 1.2);
+            ctx.quadraticCurveTo(x + headR * 0.2, headCy - headR * 0.55, x + headR * 0.95, headCy - headR * 0.1);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = "#ececf8"; ctx.beginPath(); ctx.arc(x + headR * 1.2, headCy - headR * 1.2, headR * 0.22, 0, 6.28); ctx.fill();
+            // closed eyes
+            ctx.strokeStyle = "#3a2412"; ctx.lineWidth = h * 0.018; ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(x - headR * 0.5, headCy + headR * 0.1); ctx.quadraticCurveTo(x - headR * 0.3, headCy + headR * 0.3, x - headR * 0.1, headCy + headR * 0.1);
+            ctx.moveTo(x + headR * 0.1, headCy + headR * 0.1); ctx.quadraticCurveTo(x + headR * 0.3, headCy + headR * 0.3, x + headR * 0.5, headCy + headR * 0.1);
+            ctx.stroke();
+            ctx.fillStyle = "#d98a34"; ctx.beginPath();
+            ctx.moveTo(x - headR * 0.12, headCy + headR * 0.4); ctx.lineTo(x + headR * 0.12, headCy + headR * 0.4); ctx.lineTo(x, headCy + headR * 0.62); ctx.fill();
+            // Zzz drifting up
+            const zt = (Date.now() % 2600) / 2600;
+            ctx.fillStyle = "rgba(60,60,90," + (0.85 - zt * 0.7) + ")";
+            ctx.font = "600 " + Math.round(h * (0.2 + zt * 0.12)) + "px Georgia, serif"; ctx.textAlign = "left";
+            ctx.fillText("z", x + headR * 1.0, headCy - headR * 1.3 - zt * h * 0.4);
+        }
+
+        function drawBird(x) {
+            const s = unit * 0.07, cy = wallY - s * 0.7;
+            ctx.save(); ctx.translate(x, cy); ctx.scale(facing, 1);
+            ctx.fillStyle = "#7c5230"; ctx.beginPath(); ctx.ellipse(0, 0, s * 0.5, s * 0.6, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#db7f37"; ctx.beginPath(); ctx.ellipse(s * 0.12, s * 0.1, s * 0.32, s * 0.42, 0, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#7c5230"; ctx.beginPath(); ctx.arc(s * 0.1, -s * 0.55, s * 0.36, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#9aa0a8"; ctx.beginPath(); ctx.arc(s * 0.1, -s * 0.6, s * 0.37, Math.PI, 0); ctx.fill();
+            ctx.fillRect(s * 0.04, -s * 1.05, s * 0.12, s * 0.14);
+            ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(s * 0.22, -s * 0.55, s * 0.1, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#20140a"; ctx.beginPath(); ctx.arc(s * 0.25, -s * 0.55, s * 0.05, 0, 6.28); ctx.fill();
+            ctx.fillStyle = "#e09a33"; ctx.beginPath();
+            ctx.moveTo(s * 0.4, -s * 0.5); ctx.lineTo(s * 0.62, -s * 0.45); ctx.lineTo(s * 0.4, -s * 0.38); ctx.fill();
+            ctx.restore();
+        }
+
+        function drawDisturbance(d) {
+            const sh = Math.sin(d.shake) * unit * 0.006;
+            const x = d.x + sh, y = wallY - unit * 0.03, s = unit * 0.05;
+            // a sound arc that pulses
+            const ring = (d.shake % 6.28) / 6.28;
+            ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = unit * 0.004;
+            ctx.beginPath(); ctx.arc(x, y - s * 0.6, s * (0.6 + ring * 0.9), -1.2, 1.2); ctx.stroke();
+            if (d.type === "bell") {
+                ctx.fillStyle = "#e8b84a"; ctx.beginPath();
+                ctx.moveTo(x - s * 0.4, y); ctx.quadraticCurveTo(x - s * 0.4, y - s * 0.7, x, y - s * 0.7);
+                ctx.quadraticCurveTo(x + s * 0.4, y - s * 0.7, x + s * 0.4, y); ctx.closePath(); ctx.fill();
+                ctx.fillStyle = "#8a6a1f"; ctx.beginPath(); ctx.arc(x, y + s * 0.05, s * 0.1, 0, 6.28); ctx.fill();
+            } else if (d.type === "rooster") {
+                ctx.fillStyle = "#b5543f"; ctx.beginPath(); ctx.ellipse(x, y - s * 0.2, s * 0.34, s * 0.42, 0, 0, 6.28); ctx.fill();
+                ctx.fillStyle = "#e0533a";
+                ctx.beginPath(); ctx.arc(x - s * 0.06, y - s * 0.6, s * 0.1, 0, 6.28); ctx.arc(x + s * 0.06, y - s * 0.62, s * 0.1, 0, 6.28); ctx.fill();
+                ctx.fillStyle = "#e0a24a"; ctx.beginPath();
+                ctx.moveTo(x + s * 0.3, y - s * 0.3); ctx.lineTo(x + s * 0.55, y - s * 0.25); ctx.lineTo(x + s * 0.3, y - s * 0.18); ctx.fill();
+            } else {
+                ctx.fillStyle = "#f2efe2"; ctx.beginPath(); ctx.ellipse(x, y - s * 0.3, s * 0.4, s * 0.3, 0, 0, 6.28); ctx.fill();
+                ctx.beginPath(); ctx.moveTo(x - s * 0.1, y); ctx.lineTo(x + s * 0.1, y); ctx.lineTo(x - s * 0.15, y - s * 0.2); ctx.fill();
+                ctx.fillStyle = "#9a8f72";
+                for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.arc(x + k * s * 0.16, y - s * 0.3, s * 0.05, 0, 6.28); ctx.fill(); }
+            }
+        }
+
+        function drawOilBarrel() {
+            const x = oilBarrel.x, y = wallY - unit * 0.02, w = unit * 0.07, h = unit * 0.085;
+            ctx.fillStyle = "#6e4a2a"; roundRectFill(x - w / 2, y - h, w, h, unit * 0.01);
+            ctx.strokeStyle = "#4a3018"; ctx.lineWidth = unit * 0.006;
+            ctx.beginPath();
+            ctx.moveTo(x - w / 2, y - h * 0.66); ctx.lineTo(x + w / 2, y - h * 0.66);
+            ctx.moveTo(x - w / 2, y - h * 0.33); ctx.lineTo(x + w / 2, y - h * 0.33); ctx.stroke();
+            ctx.fillStyle = "#e0922e"; ctx.beginPath(); ctx.arc(x, y - h * 0.5, w * 0.16, 0, 6.28); ctx.fill();
         }
 
         function drawRotateHint() {
@@ -573,13 +844,21 @@
 
         function onDown(x, y) {
             if (!alive) return;
+            if (phase === "day") { onDownDay(x, y); return; }
             if (inStow(x, y)) { toggleLantern(); return; }
             for (let i = 0; i < torches.length; i++) {
                 if (Math.hypot(x - torches[i].x, y - (wallY - unit * 0.02)) <= unit * 0.07) { toggleTorch(i); return; }
             }
             dragging = true; started = true; targetX = clampX(x);
         }
-        function onMove(x) { if (dragging) targetX = clampX(x); }
+        function onDownDay(x, y) {
+            for (const d of disturbances) {
+                if (Math.hypot(x - d.x, y - (wallY - unit * 0.03)) <= unit * 0.08) { errand = { kind: "hush", ref: d }; targetX = clampX(d.x); return; }
+            }
+            if (Math.hypot(x - oilBarrel.x, y - (wallY - unit * 0.04)) <= unit * 0.08) { errand = { kind: "oil" }; targetX = clampX(oilBarrel.x); return; }
+            errand = null; dragging = true; targetX = clampX(x);
+        }
+        function onMove(x) { if (dragging) { targetX = clampX(x); errand = null; } }
         function onUp() { dragging = false; }
 
         function onTouchStart(e) { const t = e.changedTouches[0]; const p = localPoint(t.clientX, t.clientY); onDown(p.x, p.y); }
@@ -591,7 +870,7 @@
         function onKey(e) {
             if (e.key === "ArrowLeft" || e.key === "a") { keys.left = true; started = true; e.preventDefault(); }
             else if (e.key === "ArrowRight" || e.key === "d") { keys.right = true; started = true; e.preventDefault(); }
-            else if (e.key === " " || e.key === "ArrowUp") { toggleLantern(); e.preventDefault(); }
+            else if (e.key === " " || e.key === "ArrowUp") { if (phase === "night") toggleLantern(); e.preventDefault(); }
         }
         function onKeyUp(e) {
             if (e.key === "ArrowLeft" || e.key === "a") keys.left = false;
