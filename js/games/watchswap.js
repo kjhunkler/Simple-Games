@@ -22,6 +22,7 @@
         const DAY_SPEED = 0.52;                // bird patrol speed (×W / sec)
         const HUSH_FRAC = 0.18;                // bird must be within this (×unit) to hush an item
         const NOISE_MAX = 100;
+        const COMBO_WINDOW = 2.6;              // seconds to chain good actions into a combo
         const OVERLAP_AUTO = 7;                // seconds before a hand-off auto-continues
         const WOLF_HP = kids ? 0.8 : 1.0;      // seconds of sustained light to drive a wolf off
         const STALKER_HP = kids ? 1.2 : 1.6;   // stalkers take longer to wear down
@@ -35,6 +36,7 @@
         let spots, distSpawnTimer, distInterval;
         let keepFloorY, owlBedX, flash, lanternStationX, lanternReady;
         let overlapKind, overlapNext, overlapT;
+        let pops, particles, combo, comboTimer, hurt, shakeT;
         let rafId, lastTs;
         let dragging = false;
         const keys = { left: false, right: false };
@@ -110,6 +112,7 @@
             flash = 0;
             overlapNext = null;
             overlapT = 0;
+            pops = []; particles = []; combo = 0; comboTimer = 0; hurt = 0; shakeT = 0;
             applyNight();
             spawnTimer = spawnInterval * 0.6;
             lastTs = 0;
@@ -137,6 +140,7 @@
             owlRested = true;
             lanternReady = 0;
             for (const s of spots) s.active = false;
+            combo = 0; comboTimer = 0; pops = []; particles = [];
             ox = W / 2; targetX = ox; facing = 1;
             applyDay();
             distSpawnTimer = distInterval * 0.5;
@@ -159,6 +163,7 @@
             if (owlRested) { score += 3; host.setScore(score); }   // quiet-day bonus
             ox = W / 2; targetX = ox; facing = 1;
             beamActive = false; beamAngle = 0; beamTargetAngle = 0; pointerDown = false;
+            combo = 0; comboTimer = 0; pops = []; particles = [];
             spawnTimer = spawnInterval * 0.6;
             flash = 0.5;
             host.vibrate([20, 40, 20]);
@@ -188,9 +193,12 @@
         function hush(s) {
             if (!s.active) return;
             s.active = false;
-            noise = Math.max(0, noise - 6);
+            goodAction();
+            noise = Math.max(0, noise - 6 - combo);   // a hush streak settles the room faster
             host.vibrate(12);
-            SGSound.play("eat");
+            SGSound.play(combo > 2 ? "match" : "eat");
+            addPop(s.x, s.vy, combo > 1 ? "shh ×" + combo : "shh", "#9ad6a0");
+            burst(s.x, s.vy, 6, "#e7d2a4", unit * 0.6);
         }
 
         function spotOf(kind) { for (const s of spots) if (s.kind === kind) return s; return null; }
@@ -207,9 +215,13 @@
 
         function wakeOwl() {
             owlRested = false;   // locked in — the owl will guard poorly tonight
+            combo = 0;
             flash = 0.6;
+            hurt = 0.5;
+            shakeT = 0.35;
             host.vibrate([60, 40, 60]);
             SGSound.play("wrong");
+            addPop(owlBedX, keepFloorY - unit * 0.16, "owl woke!", "#ff6a52");
         }
 
         function spawnWolf() {
@@ -253,9 +265,33 @@
         /* ---------- Update ---------- */
         function update(dt) {
             if (flash > 0) flash = Math.max(0, flash - dt);
+            if (hurt > 0) hurt = Math.max(0, hurt - dt);
+            if (shakeT > 0) shakeT = Math.max(0, shakeT - dt);
+            if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) combo = 0; }
+            updateFx(dt);
             if (phase === "night") updateNight(dt);
             else if (phase === "day") updateDay(dt);
             else updateOverlap(dt);
+        }
+
+        /* ---------- Juice (pops, particles, combo) ---------- */
+        function goodAction() { combo += 1; comboTimer = COMBO_WINDOW; }
+        function addPop(x, y, text, color) { pops.push({ x: x, y: y, text: text, color: color, t: 0 }); }
+        function burst(x, y, n, color, spd) {
+            for (let i = 0; i < n; i++) {
+                particles.push({
+                    x: x, y: y, vx: (Math.random() - 0.5) * spd, vy: -Math.random() * spd * 0.8,
+                    t: 0, life: 0.45 + Math.random() * 0.35, r: unit * 0.008 * (0.7 + Math.random()), color: color
+                });
+            }
+        }
+        function updateFx(dt) {
+            for (let i = pops.length - 1; i >= 0; i--) { pops[i].t += dt; if (pops[i].t > 0.9) pops.splice(i, 1); }
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += unit * 2.4 * dt;
+                if (p.t > p.life) particles.splice(i, 1);
+            }
         }
 
         // The shared dawn/dusk hand-off — a cozy beat in the tower.
@@ -372,16 +408,24 @@
         function scare(w) {
             if (w.state === "flee") return;
             w.state = "flee";
-            score += 1;
+            goodAction();
+            score += combo;                 // chained shoos are worth more
             host.setScore(score);
             host.vibrate(10);
-            SGSound.play("flap");
+            SGSound.play(combo > 2 ? "score" : "flap");
+            addPop(w.x, w.y - unit * 0.05, "+" + combo, "#ffe14d");
+            burst(w.x, w.y, 7, "#7a6e54", unit * 0.9);
         }
 
         function breach() {
             hearts -= 1;
+            combo = 0;
+            hurt = 0.6;
+            shakeT = 0.4;
             host.vibrate([50, 30, 60]);
             SGSound.play("hit");
+            addPop(W / 2, wallY - unit * 0.12, "breach!", "#ff6a52");
+            burst(W / 2, wallY - unit * 0.02, 10, "#6b6456", unit * 1.1);
             if (hearts <= 0) {
                 alive = false;
                 SGSound.play("gameover");
@@ -391,13 +435,58 @@
 
         /* ---------- Drawing ---------- */
         function draw() {
+            const shaking = shakeT > 0;
+            if (shaking) {
+                const m = shakeT * unit * 0.04;
+                ctx.save();
+                ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
+            }
             if (phase === "night") drawNight();
             else if (phase === "day") drawDay();
             else drawOverlap();
+            drawParticles();
+            drawPops();
+            if (phase !== "overlap") drawCombo();
+            if (shaking) ctx.restore();
+
             if (flash > 0) {
                 ctx.fillStyle = "rgba(255,247,235," + (flash * 0.5) + ")";
                 ctx.fillRect(0, 0, W, H);
             }
+            if (hurt > 0) {
+                ctx.fillStyle = "rgba(200,40,30," + (hurt * 0.38) + ")";
+                ctx.fillRect(0, 0, W, H);
+            }
+        }
+
+        function drawParticles() {
+            for (const p of particles) {
+                ctx.globalAlpha = Math.max(0, 1 - p.t / p.life);
+                ctx.fillStyle = p.color;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.28); ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        function drawPops() {
+            ctx.textAlign = "center";
+            for (const p of pops) {
+                ctx.globalAlpha = Math.max(0, 1 - p.t / 0.9);
+                ctx.fillStyle = p.color;
+                ctx.font = "700 " + Math.round(unit * (0.04 + p.t * 0.02)) + "px Georgia, serif";
+                ctx.fillText(p.text, p.x, p.y - p.t * unit * 0.12);
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        function drawCombo() {
+            if (combo < 2) return;
+            ctx.globalAlpha = Math.min(1, comboTimer / COMBO_WINDOW + 0.25);
+            ctx.fillStyle = "#ffd86a";
+            ctx.font = "700 " + Math.round(unit * 0.052) + "px Georgia, serif";
+            ctx.textAlign = "center";
+            ctx.fillText(combo + "× combo!", W / 2, H * 0.24);
+            ctx.globalAlpha = 1;
         }
 
         function drawNight() {
@@ -486,7 +575,7 @@
             const bob = Math.sin(w.wob) * s * 0.06;
             ctx.save();
             ctx.translate(w.x, w.y + bob);
-            if (w.state === "flee") ctx.scale(-1, 1);   // turn tail and run
+            if (w.state === "flee") { ctx.rotate(Math.sin(w.wob) * 0.4); ctx.scale(-1, 1); }   // tumble and run
             ctx.fillStyle = lit ? "#6a6e78" : (w.stalker ? "#23272f" : "#3f434c");
             ctx.beginPath(); ctx.ellipse(0, s * 0.2, s * 0.7, s * 0.36, 0, 0, 6.28); ctx.fill();
             // legs
@@ -1092,7 +1181,7 @@
         name: "Watch Swap",
         emoji: "\u{1F989}",
         tag: "Guard the wall. Shine the lantern, shoo the wolves.",
-        scoreLabel: "wolves shooed",
+        scoreLabel: "points",
         create: create
     };
 })();
