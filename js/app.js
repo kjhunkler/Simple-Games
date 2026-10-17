@@ -12,7 +12,7 @@
         "snake", "astro", "piestack", "flappy", "moles", "memory",
         "echo", "bricks", "hopper", "fruit", "tiles", "colorrush",
         "beatloop", "taptiles", "stopspin", "lanedash", "stormquest", "sentry",
-        "bughunt", "digger", "catcher", "turtlecave", "abctrace", "lettersiege",
+        "bughunt", "digger", "catcher", "turtlecave", "shellknight2", "abctrace", "lettersiege",
         "watchswap"
     ];
 
@@ -31,7 +31,7 @@
         memory: "puzzle", echo: "puzzle", tiles: "puzzle", colorrush: "puzzle", beatloop: "puzzle",
         abctrace: "learning", lettersiege: "learning",
         flappy: "scroller", hopper: "scroller", taptiles: "scroller", lanedash: "scroller",
-        stormquest: "scroller", digger: "scroller", turtlecave: "scroller"
+        stormquest: "scroller", digger: "scroller", turtlecave: "scroller", shellknight2: "scroller"
     };
     function categoryOf(id) { return GAME_CATEGORY[id] || "classic"; }
     let gameFilter = "all";
