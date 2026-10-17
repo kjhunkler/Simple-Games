@@ -23,6 +23,7 @@
         let player, platforms = [], enemies = [], gems = [], particles = [], ghosts = [], waves = [];
         let camera = 0, shake = 0, hitstop = 0, banner = 0, checkpoint = 90, boss = null;
         let jumpBuffer = 0, slashBuffer = 0, dashBuffer = 0, shellBuffer = 0, previousSlash = false;
+        let jumpDirection = 0;
         let effectTime = 0;
         let paused = false, blurred = false;
 
@@ -40,6 +41,7 @@
             keys.clear();
             pointers.clear();
             jumpBuffer = slashBuffer = dashBuffer = shellBuffer = 0;
+            jumpDirection = 0;
             previousSlash = false;
             if (player) { player.shell = 0; player.slam = false; }
         }
@@ -151,8 +153,8 @@
             }
             return false;
         }
-        function trigger(action) {
-            if (action === "jump") jumpBuffer = 0.16;
+        function trigger(action, direction = 0) {
+            if (action === "jump") { jumpBuffer = 0.16; jumpDirection = direction; }
             if (action === "slash") slashBuffer = 0.5;
             if (action === "dash") dashBuffer = 0.14;
             if (action === "shell") shellBuffer = 0.16;
@@ -213,7 +215,7 @@
                 if (Math.abs(dx) > 12) p.move = Math.sign(dx);
                 p.mode = "jump";
                 player.shell = 0;
-                trigger("jump");
+                trigger("jump", p.move);
                 p.ax = pos.x; p.ay = pos.y;
             } else if (dy >= 26 && p.mode !== "shell") {
                 p.mode = "shell"; p.move = 0;
@@ -400,6 +402,11 @@
                 const grounded = player.coyote > 0;
                 player.jumps = grounded ? 1 : 2;
                 player.vy = grounded ? -530 : -475;
+                if (jumpDirection && !move) {
+                    player.vx = jumpDirection * 235;
+                    player.facing = jumpDirection;
+                }
+                jumpDirection = 0;
                 player.grounded = false;
                 player.coyote = 0;
                 player.squash = -0.18;
@@ -556,7 +563,10 @@
                 line([[-17, -34], [0, -40], [17, -30], [8, -13], [-12, -12], [-17, -34]], "#d7e6ac", 3);
                 line([[0, -40], [1, -25], [17, -30]], "#315f57", 2);
                 line([[1, -25], [-12, -12]], "#315f57", 2);
-                if (!ghost) text(player.slam ? "SLAM" : "GUARD", 0, -59, 10, "#c0ffe0", "center");
+                if (!ghost) {
+                    ctx.scale(p.facing, 1);
+                    text(player.slam ? "SLAM" : "GUARD", 0, -59, 10, "#c0ffe0", "center");
+                }
                 ctx.restore();
                 return;
             }
@@ -869,6 +879,8 @@
                 text("Swipe up to jump ×2 • down to shell / air slam", center, base + 155, 11, "#e0e8dc", "center");
                 text("Tap anywhere to slash • hold for a 3-hit combo", center, base + 179, 10, "#b0d9d0", "center");
                 text("Use a second finger to attack while moving.", center, base + 196, 10, "#b0d9d0", "center");
+                if (!window.matchMedia("(pointer: coarse)").matches)
+                    text("Keys: A/D move • Space jump • J slash • K dash • S shell", center, base + 213, 9, "#9bbacb", "center");
                 const by = Math.min(cardHeight - 29, base + 239);
                 ctx.fillStyle = "#c3e4be"; ctx.fillRect(center - 116, by - 19, 232, 38);
                 text("TAP ANYWHERE TO BEGIN", center, by, 11, "#183a3b", "center");
@@ -911,6 +923,7 @@
         listen(window, "focus", () => { blurred = false; lastTime = 0; });
         listen(document, "visibilitychange", () => { clearInput(); lastTime = 0; });
         listen(canvas, "pointerdown", onPointerDown, { passive: false });
+        listen(canvas, "contextmenu", event => event.preventDefault());
         listen(canvas, "pointermove", onPointerMove, { passive: false });
         listen(canvas, "pointerup", onPointerEnd);
         listen(canvas, "pointercancel", onPointerEnd);
