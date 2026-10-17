@@ -59,15 +59,16 @@
             offsetY = (sceneHeight - 460 * scale) / 2;
             clearInput();
         }
-        function emit(x, y, color, count, force) {
+        function emit(x, y, color, count, force, gravity = 390) {
             const n = motion.matches ? Math.min(count, 4) : count;
             for (let i = 0; i < n; i++) {
                 const angle = Math.random() * Math.PI * 2;
                 const speed = (0.25 + Math.random() * 0.75) * force;
                 particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - force * 0.2,
-                    life: 0.3 + Math.random() * 0.25, max: 0.55, color, size: 2 + Math.random() * 3 });
+                    life: 0.3 + Math.random() * 0.25, max: 0.55, color, gravity, size: 2 + Math.random() * 3 });
             }
-            if (particles.length > 180) particles.splice(0, particles.length - 180);
+            const limit = motion.matches ? 40 : 180;
+            if (particles.length > limit) particles.splice(0, particles.length - limit);
         }
         function makeEnemy(x, kind) {
             return { x, y: 370, home: x, kind, hp: kind === "guard" ? 4 : 3, maxHp: kind === "guard" ? 4 : 3,
@@ -220,7 +221,7 @@
                 p.ax = pos.x; p.ay = pos.y;
             } else if (p.mode === "jump" && sy < 0 || p.mode === "shell" && sy > 0) {
                 // Follow a committed stroke, so one long swipe cannot consume both jumps.
-                p.ay = pos.y;
+                p.ax = pos.x; p.ay = pos.y;
             }
         }
         function onPointerEnd(event) {
@@ -361,7 +362,7 @@
         function step(dt) {
             time += dt;
             banner = Math.max(0, banner - dt);
-            particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 390 * dt; p.life -= dt; });
+            particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.gravity * dt; p.life -= dt; });
             particles = particles.filter(p => p.life > 0);
             ghosts.forEach(g => { g.life -= dt; });
             ghosts = ghosts.filter(g => g.life > 0);
@@ -503,6 +504,27 @@
             const visible = width / scale;
             const target = clamp(player.x - visible * 0.35, 0, Math.max(0, themes[stage].length - visible));
             camera = motion.matches ? target : approach(camera, target, Math.max(220, Math.abs(target - camera) * 8) * dt);
+            effectTime -= dt;
+            if (effectTime <= 0 && !motion.matches) {
+                effectTime = 0.07;
+                if (player.dash > 0 || player.slam) {
+                    emit(player.x - player.facing * 20, player.y - 25, themes[stage].glow, 3, 45, -30);
+                } else if (player.grounded && Math.abs(player.vx) > 80) {
+                    emit(player.x - player.facing * 12, player.y - 2, themes[stage].edge, 2, 35, 80);
+                }
+                if (player.attack > 0.12 && player.attack < 0.28) {
+                    emit(player.x + player.facing * 65, player.y - 35, player.combo === 3 ? "#ffce86" : "#c0fff1", 3, 90, 30);
+                }
+                waves.forEach(w => {
+                    if (w.x >= camera && w.x <= camera + visible) emit(w.x, w.y - 12, "#ffb56b", 2, 70, -20);
+                });
+                const gate = themes[stage].length - 68;
+                if (stage < 2 && Math.abs(gate - player.x) < visible) {
+                    emit(gate + Math.sin(time * 3) * 20, 340 - Math.random() * 50, themes[stage].glow, 1, 25, -70);
+                }
+                const gem = gems.find(g => !g.taken && Math.abs(g.x - player.x) < 180);
+                if (gem) emit(gem.x, gem.y - 8, "#ffe4a1", 1, 18, -25);
+            }
         }
 
         function ellipse(x, y, rx, ry, color) {
@@ -658,6 +680,14 @@
             ctx.save();
             ctx.translate(0, offsetY); ctx.scale(scale, scale);
             const span = width / scale;
+            const ambientTime = motion.matches ? 0 : time;
+            for (let i = 0; i < 3; i++) {
+                const x = span * (i + 0.3) / 3 - camera * 0.035;
+                const light = ctx.createRadialGradient(x, 110, 4, x, 110, 210);
+                light.addColorStop(0, `${theme.glow}18`);
+                light.addColorStop(1, `${theme.glow}00`);
+                ctx.fillStyle = light; ctx.fillRect(x - 210, -100, 420, 420);
+            }
             ellipse(span * 0.74 - camera * 0.025, 90, 43, 43, stage === 2 ? "#e7886255" : "#b2d9d51c");
             for (let layer = 0; layer < 2; layer++) {
                 const parallax = camera * (layer ? 0.28 : 0.12);
@@ -681,12 +711,32 @@
                     }
                 }
             }
-            if (!motion.matches) {
-                for (let i = 0; i < 18; i++) {
-                    const x = ((i * 137.3 - camera * 0.18 + Math.sin(time * 0.6 + i) * 8) % (span + 40) + span + 40) % (span + 40);
-                    const y = (i * 63.7 - time * (stage === 2 ? 13 : 3)) % 360;
-                    ellipse(x, (y + 360) % 360, 1.7, 1.7, `${theme.glow}66`);
+            // Analytical weather stays bounded and never competes with combat particles.
+            for (let i = 0; i < (motion.matches ? 8 : 48); i++) {
+                const depth = i % 3 + 1;
+                const drift = stage === 1 ? ambientTime * 12 : Math.sin(ambientTime * 0.6 + i) * 16;
+                const x = ((i * 137.3 - camera * depth * 0.09 + drift) % (span + 40) + span + 40) % (span + 40) - 20;
+                const speed = stage === 1 ? 110 : stage === 2 ? -24 : -5;
+                const y = ((i * 63.7 + ambientTime * speed * depth) % 390 + 390) % 390;
+                if (stage === 1) {
+                    line([[x, y], [x - 2, y + 7 + depth * 2]], "#b2eaf833", 1);
+                    if (i % 8 === 0) ellipse(x, 363, 7 + Math.sin(ambientTime * 3 + i) * 3, 1.2, "#b2eaf822");
+                } else {
+                    const pulse = 0.5 + Math.sin(ambientTime * 2 + i) * 0.2;
+                    ctx.globalAlpha = pulse;
+                    ellipse(x, y, depth * 3.5, depth * 3.5, `${theme.glow}15`);
+                    ellipse(x, y, depth * 0.8, stage === 2 ? depth * 1.5 : depth * 0.8, theme.glow);
+                    if (stage === 0 && i % 7 === 0) ellipse(x + 13, y + 8, 4, 1.5, "#b2d89077");
+                    ctx.globalAlpha = 1;
                 }
+            }
+            for (let i = 0; i < 3; i++) {
+                const x = span * (i + 0.5) / 3 + Math.sin(ambientTime * 0.18 + i) * 35;
+                const mist = ctx.createRadialGradient(x, 345, 1, x, 345, 210);
+                mist.addColorStop(0, `${theme.glow}0d`); mist.addColorStop(1, `${theme.glow}00`);
+                ctx.save(); ctx.translate(0, 285); ctx.scale(1, 0.2);
+                ctx.fillStyle = mist; ctx.fillRect(x - 210, 135, 420, 420);
+                ctx.restore();
             }
             ctx.restore();
         }
@@ -709,6 +759,18 @@
                 } else {
                     for (let x = Math.max(p.x + 20, Math.floor(left / 70) * 70); x < Math.min(p.x + p.w, right); x += 70) {
                         line([[x, p.y + 35], [x + 12, p.y + 53], [x + 7, p.y + 70]], "#0c1e2533", 2);
+                    }
+                }
+                for (let x = Math.max(p.x + 30, Math.ceil(left / 95) * 95); x < Math.min(p.x + p.w - 15, right); x += 95) {
+                    const sway = motion.matches ? 0 : Math.sin(time * 1.8 + x) * 3;
+                    if (stage === 0) {
+                        line([[x, p.y], [x - 3 + sway, p.y - 13], [x + 3 + sway, p.y - 22]], "#87bc8e", 2);
+                        ellipse(x + 3 + sway, p.y - 22, 4, 3, "#d4efab");
+                    } else if (stage === 1) {
+                        line([[x - 4, p.y], [x, p.y - 18], [x + 5, p.y]], "#a5e5ee88", 3);
+                    } else {
+                        ellipse(x, p.y - 3, 9, 3, "#ffb56b33");
+                        ellipse(x + sway, p.y - 5, 3, 4, "#ffc781aa");
                     }
                 }
             });
@@ -745,6 +807,10 @@
             particles.forEach(p => {
                 ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
                 ellipse(p.x, p.y, p.size, p.size * 0.65, p.color);
+                if (!motion.matches) {
+                    ctx.globalAlpha *= 0.15;
+                    ellipse(p.x, p.y, p.size * 2.5, p.size * 2, p.color);
+                }
             });
             ctx.globalAlpha = 1;
             if (player.attack > 0 && player.combo === 3) text("III • BREAKER", player.x, player.y - 102, 14, "#ffdc94", "center");
