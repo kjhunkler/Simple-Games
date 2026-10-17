@@ -72,10 +72,17 @@ Games are displayed in the order defined by `GAME_ORDER` in `js/app.js:11`.
 ### Shell Knight II — Emberwake
 
 The sequel is a separate game; the original Shell Knight and its best scores are unchanged.
-Use the on-screen movement and action buttons on touch devices. On a keyboard, move with
-**A/D** or **Left/Right**, jump with **Space/W**, slash with **J/Z**, and dash with
-**K/X/Shift**. Jump again in the air for a double jump, and hold slash for a three-hit combo.
-Kids Mode provides extra health and more forgiving enemy timing.
+Touch controls work anywhere on the canvas, including the instruction strip, like the original:
+- **Swipe sideways and hold** to move; reverse the swipe to turn, or **flick quickly** to dash.
+- **Swipe up** to jump; lift and swipe up again to double-jump. Diagonal upward swipes steer the jump.
+- **Swipe down** to briefly guard in your shell (blocks one hit), or slam onto nearby enemies from the air.
+- **Tap** to slash, or **hold still** for a three-hit combo. Use a second finger to attack while moving.
+
+On a keyboard, move with **A/D** or **Left/Right**, jump with **Space/W/Up**, slash with
+**J/Z**, dash with **K/X/Shift**, and guard/slam with **S/Down**.
+Kids Mode provides extra health and more forgiving enemy timing. Each land has its own
+weather, lighting, and scenery, with trails and impact particles; reduced-motion settings
+disable drifting ambiance and continuous trails and reduce impact bursts.
 
 ---
 
