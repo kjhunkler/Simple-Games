@@ -18,11 +18,12 @@
             { name: "The Ember Crown", sky: "#2b1832", bottom: "#6b3540", rock: "#453039", edge: "#ffb66b", glow: "#ffd592", length: 2680 }
         ];
         let width = 1, height = 1, dpr = 1, scale = 1, sceneHeight = 1, offsetY = 0;
-        let controls = [], frame = 0, lastTime = 0, destroyed = false, started = false;
+        let frame = 0, lastTime = 0, destroyed = false, started = false;
         let state = "title", stage = 0, score = 0, time = 0, endTime = 0, reported = false;
         let player, platforms = [], enemies = [], gems = [], particles = [], ghosts = [], waves = [];
         let camera = 0, shake = 0, hitstop = 0, banner = 0, checkpoint = 90, boss = null;
-        let jumpBuffer = 0, slashBuffer = 0, dashBuffer = 0, previousSlash = false;
+        let jumpBuffer = 0, slashBuffer = 0, dashBuffer = 0, shellBuffer = 0, previousSlash = false;
+        let effectTime = 0;
         let paused = false, blurred = false;
 
         function listen(target, name, fn, options) {
@@ -38,8 +39,9 @@
         function clearInput() {
             keys.clear();
             pointers.clear();
-            jumpBuffer = slashBuffer = dashBuffer = 0;
+            jumpBuffer = slashBuffer = dashBuffer = shellBuffer = 0;
             previousSlash = false;
+            if (player) { player.shell = 0; player.slam = false; }
         }
         function blocked() {
             const dialog = document.getElementById("game-confirm");
@@ -51,19 +53,10 @@
             dpr = Math.min(window.devicePixelRatio || 1, 2);
             canvas.width = Math.round(width * dpr);
             canvas.height = Math.round(height * dpr);
-            const tray = Math.min(140, Math.max(92, height * 0.23));
+            const tray = Math.min(96, Math.max(68, height * 0.16));
             sceneHeight = height - tray;
             scale = Math.max(0.2, Math.min(sceneHeight / 460, width / 480, 1.7));
             offsetY = (sceneHeight - 460 * scale) / 2;
-            const r = Math.max(8, Math.min(29, (width - 72) / 10, (tray - 40) / 2));
-            const y = sceneHeight + tray * 0.53;
-            controls = [
-                { id: "left", x: r + 13, y, r, label: "◀", hint: "A / ←" },
-                { id: "right", x: r * 3 + 25, y, r, label: "▶", hint: "D / →" },
-                { id: "dash", x: width - r * 5 - 36, y, r, label: "DASH", hint: "K / X" },
-                { id: "slash", x: width - r * 3 - 24, y, r, label: "SLASH", hint: "J / Z" },
-                { id: "jump", x: width - r - 12, y, r, label: "JUMP", hint: "SPACE" }
-            ];
             clearInput();
         }
         function emit(x, y, color, count, force) {
@@ -113,11 +106,12 @@
             if (boss) enemies.push(boss);
             player = { x: 90, y: 370, vx: 0, vy: 0, facing: 1, health: health || maxHealth,
                 grounded: true, coyote: 0.12, jumps: 0, invuln: 0, dash: 0, dashCooldown: 0,
+                shell: 0, shellCooldown: 0, slam: false,
                 attack: 0, combo: 0, comboWindow: 0, attackId: 0, squash: 0, gait: 0, ghostTime: 0 };
             checkpoint = 90;
             camera = 0;
             waves = []; particles = []; ghosts = [];
-            hitstop = shake = 0;
+            hitstop = shake = effectTime = 0;
             banner = 3;
             clearInput();
         }
@@ -150,18 +144,23 @@
             if (action === "left" && (keys.has("ArrowLeft") || keys.has("KeyA"))) return true;
             if (action === "right" && (keys.has("ArrowRight") || keys.has("KeyD"))) return true;
             if (action === "slash" && (keys.has("KeyJ") || keys.has("KeyZ"))) return true;
-            for (const value of pointers.values()) if (value === action) return true;
+            for (const p of pointers.values()) {
+                if (action === "left" && p.move < 0 || action === "right" && p.move > 0 ||
+                    action === "slash" && p.mode === "hold") return true;
+            }
             return false;
         }
         function trigger(action) {
             if (action === "jump") jumpBuffer = 0.16;
-            if (action === "slash") slashBuffer = 0.2;
+            if (action === "slash") slashBuffer = 0.5;
             if (action === "dash") dashBuffer = 0.14;
+            if (action === "shell") shellBuffer = 0.16;
         }
         const bindings = {
             ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right",
             Space: "jump", ArrowUp: "jump", KeyW: "jump", KeyJ: "slash", KeyZ: "slash",
-            KeyK: "dash", KeyX: "dash", ShiftLeft: "dash", ShiftRight: "dash"
+            KeyK: "dash", KeyX: "dash", ShiftLeft: "dash", ShiftRight: "dash",
+            ArrowDown: "shell", KeyS: "shell"
         };
         function onKeyDown(event) {
             if (!bindings[event.code] && event.code !== "Enter" && event.code !== "KeyR") return;
@@ -178,39 +177,77 @@
             const rect = canvas.getBoundingClientRect();
             return { x: (event.clientX - rect.left) * width / rect.width, y: (event.clientY - rect.top) * height / rect.height };
         }
-        function controlAt(pos) {
-            return controls.find(c => Math.hypot(pos.x - c.x, pos.y - c.y) <= c.r + 5);
-        }
         function onPointerDown(event) {
-            if (blocked()) return;
+            if (blocked() || (event.pointerType === "mouse" && event.button !== 0)) return;
             event.preventDefault();
             if (state === "title") { begin(); return; }
             if (state !== "playing") return;
             if (window.SGSound) window.SGSound.unlock();
-            const button = controlAt(pointerPosition(event));
-            if (!button) return;
-            pointers.set(event.pointerId, button.id);
-            trigger(button.id);
+            const pos = pointerPosition(event);
+            pointers.set(event.pointerId, { sx: pos.x, sy: pos.y, ax: pos.x, ay: pos.y,
+                lx: pos.x, ly: pos.y, lt: event.timeStamp, mode: "", move: 0, age: 0 });
             try { canvas.setPointerCapture(event.pointerId); } catch (_) { /* Pointer may already have ended. */ }
         }
         function onPointerMove(event) {
-            if (!pointers.has(event.pointerId)) return;
-            const previous = pointers.get(event.pointerId);
-            // Sliding the movement thumb changes direction without a release.
-            if (previous === "left" || previous === "right" || previous === "move") {
-                const next = controlAt(pointerPosition(event));
-                pointers.set(event.pointerId, next && (next.id === "left" || next.id === "right") ? next.id : "move");
+            const p = pointers.get(event.pointerId);
+            if (!p) return;
+            if (blocked() || state !== "playing") { clearInput(); return; }
+            event.preventDefault();
+            const pos = pointerPosition(event);
+            const dx = pos.x - p.ax, dy = pos.y - p.ay;
+            const sx = pos.x - p.lx, sy = pos.y - p.ly;
+            const speed = Math.hypot(sx, sy) * 1000 / Math.max(1, event.timeStamp - p.lt);
+            p.lx = pos.x; p.ly = pos.y; p.lt = event.timeStamp;
+            const horizontal = Math.abs(dx) > Math.abs(dy) * (dy < 0 ? 3.73 : 1.7);
+            if (horizontal && Math.abs(dx) >= 18) {
+                p.move = Math.sign(dx);
+                p.mode = "move";
+                player.shell = 0;
+                if (speed > 1100 && Math.abs(sx) > Math.abs(sy) * 1.7) {
+                    player.facing = p.move;
+                    trigger("dash");
+                }
+                p.ax = pos.x; p.ay = pos.y;
+            } else if (dy <= -26 && p.mode !== "jump") {
+                if (Math.abs(dx) > 12) p.move = Math.sign(dx);
+                p.mode = "jump";
+                player.shell = 0;
+                trigger("jump");
+                p.ax = pos.x; p.ay = pos.y;
+            } else if (dy >= 26 && p.mode !== "shell") {
+                p.mode = "shell"; p.move = 0;
+                trigger("shell");
+                p.ax = pos.x; p.ay = pos.y;
+            } else if (p.mode === "jump" && sy < 0 || p.mode === "shell" && sy > 0) {
+                // Follow a committed stroke, so one long swipe cannot consume both jumps.
+                p.ay = pos.y;
             }
         }
-        function onPointerEnd(event) { pointers.delete(event.pointerId); }
+        function onPointerEnd(event) {
+            if (event.type === "pointerup" && !blocked() && state === "playing") {
+                // Some devices only deliver the final position on release.
+                onPointerMove(event);
+                const p = pointers.get(event.pointerId);
+                if (p && !p.mode) trigger("slash");
+            }
+            pointers.delete(event.pointerId);
+        }
 
         function damage(direction, falling) {
             if (state !== "playing" || (!falling && (player.invuln > 0 || player.dash > 0))) return;
+            if (!falling && player.shell > 0) {
+                player.shell = 0;
+                player.invuln = 0.35;
+                emit(player.x + direction * 15, player.y - 24, "#b9f3e0", 14, 150);
+                sound("bounce");
+                return;
+            }
             player.health--;
             player.invuln = kids ? 2.1 : 1.5;
             player.vx = direction * 230;
             player.vy = -260;
             player.attack = 0;
+            player.shell = 0; player.slam = false;
             player.squash = -0.22;
             emit(player.x, player.y - 28, "#ffe7ac", 15, 165);
             shake = motion.matches ? 0 : 4;
@@ -220,6 +257,7 @@
             if (player.health <= 0) finish(false);
         }
         function attack() {
+            player.shell = 0;
             player.combo = player.comboWindow > 0 ? player.combo % 3 + 1 : 1;
             player.attack = player.combo === 3 ? 0.48 : 0.36;
             player.comboWindow = 0.82;
@@ -228,7 +266,29 @@
             slashBuffer = 0;
             sound(player.combo === 3 ? "perfect" : "tap");
         }
+        function shellSlam() {
+            player.slam = false;
+            emit(player.x, player.y - 3, themes[stage].glow, 32, 220);
+            shake = motion.matches ? 0 : 4;
+            sound("bossslam");
+            host.vibrate([18]);
+            enemies.forEach(enemy => {
+                if (enemy.hp <= 0 || Math.abs(enemy.x - player.x) > 105 ||
+                    Math.abs(enemy.y - player.y) > 45) return;
+                enemy.hp -= 2;
+                enemy.flash = 0.2;
+                enemy.knock = (Math.sign(enemy.x - player.x) || player.facing) * 180;
+                if (enemy.kind !== "boss") { enemy.phase = "recover"; enemy.timer = 0.6; }
+                emit(enemy.x, enemy.y - 25, "#ffe1a5", 12, 150);
+                if (enemy.hp <= 0) defeatEnemy(enemy);
+            });
+        }
         function enemyWidth(enemy) { return enemy.kind === "boss" ? 43 : 22; }
+        function defeatEnemy(enemy) {
+            addScore(enemy.kind === "boss" ? 300 : 45);
+            emit(enemy.x, enemy.y - 35, "#ffc77d", 25, 240);
+            if (enemy.kind === "boss") { waves = []; finish(true); }
+        }
         function strikeEnemies() {
             const duration = player.combo === 3 ? 0.48 : 0.36;
             const elapsed = duration - player.attack;
@@ -248,11 +308,7 @@
                 shake = motion.matches ? 0 : player.combo === 3 ? 4 : 1.8;
                 sound("hit");
                 host.vibrate([player.combo === 3 ? 18 : 8]);
-                if (enemy.hp <= 0) {
-                    addScore(enemy.kind === "boss" ? 300 : 45);
-                    emit(enemy.x, enemy.y - 35, "#ffc77d", 25, 240);
-                    if (enemy.kind === "boss") { waves = []; finish(true); }
-                }
+                if (enemy.hp <= 0) defeatEnemy(enemy);
             });
         }
         function updateEnemy(enemy, dt) {
@@ -318,10 +374,17 @@
                 return;
             }
             if (hitstop > 0) { hitstop = Math.max(0, hitstop - dt); return; }
+            pointers.forEach(p => {
+                p.age += dt;
+                if (!p.mode && p.age >= 0.3 && Math.hypot(p.lx - p.sx, p.ly - p.sy) < 12) p.mode = "hold";
+            });
             jumpBuffer = Math.max(0, jumpBuffer - dt);
             slashBuffer = Math.max(0, slashBuffer - dt);
             dashBuffer = Math.max(0, dashBuffer - dt);
+            shellBuffer = Math.max(0, shellBuffer - dt);
             player.invuln = Math.max(0, player.invuln - dt);
+            player.shell = Math.max(0, player.shell - dt);
+            player.shellCooldown = Math.max(0, player.shellCooldown - dt);
             player.dashCooldown = Math.max(0, player.dashCooldown - dt);
             player.comboWindow = Math.max(0, player.comboWindow - dt);
             player.attack = Math.max(0, player.attack - dt);
@@ -332,6 +395,7 @@
             previousSlash = slash;
             if (move && player.dash <= 0 && player.attack <= 0) player.facing = move;
             if (jumpBuffer > 0 && (player.coyote > 0 || player.jumps < 2) && player.dash <= 0) {
+                player.shell = 0; player.slam = false;
                 const grounded = player.coyote > 0;
                 player.jumps = grounded ? 1 : 2;
                 player.vy = grounded ? -530 : -475;
@@ -345,13 +409,23 @@
             if (dashBuffer > 0 && player.dashCooldown <= 0) {
                 if (move) player.facing = move;
                 player.dash = 0.18;
+                player.shell = 0; player.slam = false;
                 player.dashCooldown = kids ? 0.68 : 0.85;
                 player.attack = 0;
                 player.vy = 0;
                 dashBuffer = 0;
                 sound("flap");
             }
-            if (slashBuffer > 0 && player.attack <= 0 && player.dash <= 0) attack();
+            if (shellBuffer > 0 && player.shellCooldown <= 0) {
+                player.shell = 0.65;
+                player.shellCooldown = 0.9;
+                player.slam = !player.grounded;
+                player.dash = player.attack = slashBuffer = shellBuffer = 0;
+                if (player.slam) player.vy = 820;
+                emit(player.x, player.y - 25, themes[stage].glow, 10, 100);
+                sound("drop");
+            }
+            if (slashBuffer > 0 && player.attack <= 0 && player.dash <= 0 && !player.slam) attack();
             if (player.dash > 0) {
                 player.dash = Math.max(0, player.dash - dt);
                 player.vx = player.facing * 650;
@@ -362,7 +436,7 @@
                     player.ghostTime = 0.035;
                 }
             } else {
-                player.vx = approach(player.vx, move * 235, (player.grounded ? 1900 : 1100) * dt);
+                player.vx = approach(player.vx, player.shell > 0 || player.slam ? 0 : move * 235, (player.grounded ? 1900 : 1100) * dt);
                 player.vy = Math.min(820, player.vy + 1450 * dt);
             }
             const oldY = player.y;
@@ -383,6 +457,7 @@
                         sound("tap");
                     }
                     player.y = landing; player.vy = 0; player.grounded = true; player.jumps = 0;
+                    if (player.slam) shellSlam();
                 }
             }
             if (player.grounded) {
@@ -453,6 +528,16 @@
             ctx.scale(1 + squish, 1 - squish);
             ctx.translate(0, -bob);
             if (!ghost) ellipse(0, 0, 23, 5, "#081b2544");
+            if (player.shell > 0 || player.slam) {
+                ellipse(0, -21, 25, 23, "#153f3f");
+                ellipse(-2, -23, 21, 19, "#83ba85");
+                line([[-17, -34], [0, -40], [17, -30], [8, -13], [-12, -12], [-17, -34]], "#d7e6ac", 3);
+                line([[0, -40], [1, -25], [17, -30]], "#315f57", 2);
+                line([[1, -25], [-12, -12]], "#315f57", 2);
+                if (!ghost) text(player.slam ? "SLAM" : "GUARD", 0, -59, 10, "#c0ffe0", "center");
+                ctx.restore();
+                return;
+            }
             const airborne = !player.grounded;
             const leg1 = airborne ? -8 : stride, leg2 = airborne ? 9 : -stride;
             line([[-6, -23], [-10 - leg1 * 0.4, -13], [-9 + leg1, -4]], "#244d42", 10);
@@ -692,22 +777,10 @@
         function drawControls() {
             ctx.fillStyle = "#0a1727"; ctx.fillRect(0, sceneHeight, width, height - sceneHeight);
             ctx.fillStyle = "#b9d9d622"; ctx.fillRect(0, sceneHeight, width, 1);
-            text("MOVE", (controls[0].x + controls[1].x) / 2, sceneHeight + 17, 9, "#91b1c2", "center");
-            text("DOUBLE JUMP • HOLD SLASH FOR COMBO", (controls[2].x + controls[4].x) / 2, sceneHeight + 17, width < 380 ? 7 : 8, "#91b1c2", "center");
-            controls.forEach(c => {
-                const pressed = held(c.id) || Array.from(pointers.values()).includes(c.id);
-                ellipse(c.x, c.y + 3, c.r, c.r, "#040c16");
-                ellipse(c.x, c.y, c.r, c.r, pressed ? "#457f7c" : c.id === "slash" ? "#634451" : "#243c53");
-                ctx.strokeStyle = pressed ? "#d0fff1" : c.id === "slash" ? "#e8a889" : "#7295ae";
-                ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.stroke();
-                text(c.label, c.x, c.y, c.id === "left" || c.id === "right" ? 17 : c.r * 0.34, "#f4f1df", "center");
-                text(c.hint, c.x, c.y + c.r + 13, 8, "#9eb5c6", "center");
-                if (c.id === "dash" && player.dashCooldown > 0) {
-                    ctx.strokeStyle = "#a5e8d4"; ctx.lineWidth = 3;
-                    ctx.beginPath(); ctx.arc(c.x, c.y, c.r - 4, -Math.PI / 2,
-                        -Math.PI / 2 + Math.PI * 2 * (1 - player.dashCooldown / (kids ? 0.68 : 0.85))); ctx.stroke();
-                }
-            });
+            const size = width < 380 ? 10 : 12;
+            text("↔ SWIPE & HOLD: MOVE  •  FLICK: DASH", width / 2, sceneHeight + 17, size, "#c2e8e1", "center");
+            text("↑ JUMP ×2   •   ↓ SHELL / AIR SLAM", width / 2, sceneHeight + 37, size, "#c2e8e1", "center");
+            text("TAP: SLASH  •  HOLD: COMBO  •  USE ANYWHERE", width / 2, sceneHeight + 57, size - 1, "#f5c39b", "center");
         }
         function drawOverlay() {
             if (state === "playing") return;
@@ -726,13 +799,13 @@
                 text("SHELL KNIGHT II", center, base + 37, Math.min(32, width / 12), "#f7e9c6", "center");
                 text("E M B E R W A K E", center, base + 68, 15, "#f5a787", "center");
                 text("Three lands. One stolen sunrise.", center, base + 104, 12, "#b6d0d7", "center");
-                text("Move  ← → / A D     Jump  Space / W", center, base + 135, 11, "#e0e8dc", "center");
-                text("Slash  J / Z     Dash  K / X / Shift", center, base + 155, 11, "#e0e8dc", "center");
-                text("Double jump • hold slash for a 3-hit combo", center, base + 179, 10, "#b0d9d0", "center");
-                text("Dash through danger. Jump over ground waves.", center, base + 196, 10, "#b0d9d0", "center");
+                text("Swipe & hold to move • flick sideways to dash", center, base + 135, 11, "#e0e8dc", "center");
+                text("Swipe up to jump ×2 • down to shell / air slam", center, base + 155, 11, "#e0e8dc", "center");
+                text("Tap anywhere to slash • hold for a 3-hit combo", center, base + 179, 10, "#b0d9d0", "center");
+                text("Use a second finger to attack while moving.", center, base + 196, 10, "#b0d9d0", "center");
                 const by = Math.min(cardHeight - 29, base + 239);
                 ctx.fillStyle = "#c3e4be"; ctx.fillRect(center - 116, by - 19, 232, 38);
-                text("TAP OR PRESS ENTER TO BEGIN", center, by, 11, "#183a3b", "center");
+                text("TAP ANYWHERE TO BEGIN", center, by, 11, "#183a3b", "center");
                 ctx.restore();
             } else {
                 text(state === "victory" ? "THE SUNRISE RETURNS" : "REST, BRAVE KNIGHT", center, sceneHeight * 0.34, Math.min(25, width / 15), "#ffe0a5", "center");
@@ -772,7 +845,7 @@
         listen(window, "focus", () => { blurred = false; lastTime = 0; });
         listen(document, "visibilitychange", () => { clearInput(); lastTime = 0; });
         listen(canvas, "pointerdown", onPointerDown, { passive: false });
-        listen(canvas, "pointermove", onPointerMove);
+        listen(canvas, "pointermove", onPointerMove, { passive: false });
         listen(canvas, "pointerup", onPointerEnd);
         listen(canvas, "pointercancel", onPointerEnd);
         listen(canvas, "lostpointercapture", onPointerEnd);
