@@ -67,6 +67,15 @@ Games are displayed in the order defined by `GAME_ORDER` in `js/app.js:11`.
 | `stormquest` | Storm Quest | ⚡ | points | Aim lightning, roll to dodge & slay the Storm Titan. |
 | `digger` | Deep Digger | ⛏️ | coins | Dig for treasure, then upgrade your gear at the shop. |
 | `turtlecave` | Shell Knight | 🐢 | treasure | Sword turtle cave-crawl: swipe to move & dash, tap to slash, beat the boss! |
+| `shellknight2` | Shell Knight II | 🐢 | treasure | Emberwake: dash, double-jump & sword-combo through three magical lands. |
+
+### Shell Knight II — Emberwake
+
+The sequel is a separate game; the original Shell Knight and its best scores are unchanged.
+Use the on-screen movement and action buttons on touch devices. On a keyboard, move with
+**A/D** or **Left/Right**, jump with **Space/W**, slash with **J/Z**, and dash with
+**K/X/Shift**. Jump again in the air for a double jump, and hold slash for a three-hit combo.
+Kids Mode provides extra health and more forgiving enemy timing.
 
 ---
 
