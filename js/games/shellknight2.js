@@ -165,10 +165,9 @@
         };
         function onKeyDown(event) {
             if (!bindings[event.code] && event.code !== "Enter" && event.code !== "KeyR") return;
-            if (blocked()) return;
+            if (blocked() || (state !== "title" && state !== "playing")) return;
             event.preventDefault();
             if (state === "title") { if (!event.repeat) begin(); return; }
-            if (state !== "playing") return;
             if (!keys.has(event.code)) trigger(bindings[event.code]);
             keys.add(event.code);
         }
