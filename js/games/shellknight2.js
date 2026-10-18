@@ -17,9 +17,26 @@
             { name: "Glasswater Ruins", sky: "#151d3e", bottom: "#334169", rock: "#303759", edge: "#93deed", glow: "#b2eaf8", length: 2380 },
             { name: "The Ember Crown", sky: "#2b1832", bottom: "#6b3540", rock: "#453039", edge: "#ffb66b", glow: "#ffd592", length: 2680 }
         ];
+        const bossTypes = [
+            { kind: "cinder", pattern: ["charge", "slam"], body: "#91525a", variants: [
+                { name: "Cinder Regent", color: "#ffc286", health: 0, speed: 220, count: 1 },
+                { name: "Blaze Regent", color: "#ff976b", health: 3, speed: 250, count: 2 },
+                { name: "Sunfire Regent", color: "#ffe68a", health: 6, speed: 280, count: 3 }
+            ] },
+            { kind: "frost", pattern: ["volley", "volley", "slam"], body: "#547caa", variants: [
+                { name: "Rime Oracle", color: "#bcefff", health: -3, speed: 190, count: 1 },
+                { name: "Glacier Oracle", color: "#80d9ef", health: 0, speed: 215, count: 2 },
+                { name: "Blizzard Oracle", color: "#e0d4ff", health: 3, speed: 240, count: 3 }
+            ] },
+            { kind: "storm", pattern: ["charge", "charge", "slam"], body: "#74649e", variants: [
+                { name: "Thunder Lancer", color: "#d5b9ff", health: 0, speed: 350, count: 1 },
+                { name: "Tempest Lancer", color: "#97f0df", health: 3, speed: 390, count: 2 },
+                { name: "Cyclone Lancer", color: "#f1d6ff", health: 6, speed: 430, count: 3 }
+            ] }
+        ];
         let width = 1, height = 1, dpr = 1, scale = 1, sceneHeight = 1, offsetY = 0;
         let frame = 0, lastTime = 0, destroyed = false, started = false;
-        let state = "title", stage = 0, score = 0, time = 0, endTime = 0, reported = false;
+        let state = "title", stage = 0, bossesDefeated = 0, score = 0, time = 0, endTime = 0, reported = false;
         let player, platforms = [], enemies = [], gems = [], particles = [], ghosts = [], waves = [];
         let camera = 0, shake = 0, hitstop = 0, banner = 0, checkpoint = 90, boss = null;
         let jumpBuffer = 0, slashBuffer = 0, dashBuffer = 0, shellBuffer = 0, previousSlash = false;
@@ -76,6 +93,13 @@
             return { x, y: 370, home: x, kind, hp: kind === "guard" ? 4 : 3, maxHp: kind === "guard" ? 4 : 3,
                 phase: "idle", timer: 0.6, facing: -1, knock: 0, flash: 0, hitId: -1, attackX: x, cycle: 0 };
         }
+        function makeBoss() {
+            const type = bossTypes[bossesDefeated % bossTypes.length];
+            const variant = Math.floor(bossesDefeated / bossTypes.length) % type.variants.length;
+            const form = type.variants[variant];
+            const hp = (kids ? 21 : 27) + form.health;
+            return { ...makeEnemy(2360, "boss"), type, form, variant, hp, maxHp: hp, move: "charge" };
+        }
         function loadStage(index, health) {
             stage = index;
             const length = themes[stage].length;
@@ -105,9 +129,9 @@
             }
             enemies = [540, 1130, 1810].map((ex, i) => makeEnemy(ex, (i + stage) % 2 ? "guard" : "beetle"));
             if (stage === 2) enemies = enemies.filter(e => e.x < 1700);
-            boss = stage === 2 ? { ...makeEnemy(2360, "boss"), hp: kids ? 21 : 27, maxHp: kids ? 21 : 27 } : null;
+            boss = stage === 2 ? makeBoss() : null;
             if (boss) enemies.push(boss);
-            player = { x: 90, y: 370, vx: 0, vy: 0, facing: 1, health: health || maxHealth,
+            player = { x: 90, y: 370, vx: 0, vy: 0, facing: 1, health: health ?? maxHealth,
                 grounded: true, coyote: 0.12, jumps: 0, invuln: 0, dash: 0, dashCooldown: 0,
                 shell: 0, shellCooldown: 0, slam: false,
                 attack: 0, combo: 0, comboWindow: 0, attackId: 0, squash: 0, gait: 0, ghostTime: 0 };
@@ -120,7 +144,7 @@
         }
         function reset() {
             clearInput();
-            score = 0; time = 0; endTime = 0; reported = false;
+            score = 0; time = 0; endTime = 0; reported = false; bossesDefeated = 0;
             host.setScore(0);
             state = "title";
             loadStage(0, maxHealth);
@@ -132,16 +156,12 @@
             clearInput();
             sound("match");
         }
-        function finish(victory) {
+        function finish() {
             if (state !== "playing") return;
-            state = victory ? "victory" : "gameover";
+            state = "gameover";
             endTime = 0;
             clearInput();
-            if (victory) {
-                addScore(500 + player.health * 25);
-                emit(player.x, player.y - 60, "#ffd778", 40, 220);
-                sound("perfect");
-            } else sound("hit");
+            sound("hit");
         }
         function held(action) {
             if (action === "left" && (keys.has("ArrowLeft") || keys.has("KeyA"))) return true;
@@ -257,7 +277,7 @@
             hitstop = motion.matches ? 0 : 0.055;
             sound("hit");
             host.vibrate([18]);
-            if (player.health <= 0) finish(false);
+            if (player.health <= 0) finish();
         }
         function attack() {
             player.shell = 0;
@@ -290,7 +310,12 @@
         function defeatEnemy(enemy) {
             addScore(enemy.kind === "boss" ? 300 : 45);
             emit(enemy.x, enemy.y - 35, "#ffc77d", 25, 240);
-            if (enemy.kind === "boss") { waves = []; finish(true); }
+            if (enemy.kind === "boss") {
+                waves = [];
+                bossesDefeated++;
+                addScore(500 + player.health * 25);
+                sound("perfect");
+            }
         }
         function strikeEnemies() {
             const duration = player.combo === 3 ? 0.48 : 0.36;
@@ -335,26 +360,39 @@
                         enemy.timer = (kids ? 1.15 : 0.8) + (isBoss ? 0.2 : 0);
                         enemy.attackX = enemy.x;
                         enemy.cycle++;
+                        if (isBoss) enemy.move = enemy.type.pattern[(enemy.cycle - 1) % enemy.type.pattern.length];
                     }
                 }
             } else if (enemy.phase === "warn" && enemy.timer <= 0) {
                 enemy.phase = "attack";
-                enemy.timer = isBoss ? 0.34 : 0.24;
-                if (isBoss && enemy.cycle % 2 === 0) {
-                    waves.push({ x: enemy.x, y: 365, vx: -220, life: 3 });
-                    waves.push({ x: enemy.x, y: 365, vx: 220, life: 3 });
-                    emit(enemy.x, 366, "#ffb56b", 25, 180);
+                enemy.timer = isBoss ? (enemy.type.kind === "storm" ? 0.38 + enemy.variant * 0.06 : 0.34) : 0.24;
+                if (isBoss && enemy.move === "slam") {
+                    const speed = enemy.type.kind === "cinder" ? enemy.form.speed : 220;
+                    for (let i = 0; i < enemy.form.count; i++) {
+                        for (const direction of [-1, 1]) {
+                            waves.push({ x: enemy.x, y: 365, vx: direction * speed, vy: 0, life: 3,
+                                delay: i * 0.3, color: enemy.form.color, kind: "wave" });
+                        }
+                    }
+                    emit(enemy.x, 366, enemy.form.color, 25, 180);
                     shake = motion.matches ? 0 : 3;
+                } else if (isBoss && enemy.move === "volley") {
+                    const angle = Math.atan2(player.y - 28 - (enemy.y - 55), dx);
+                    for (let i = 0; i < enemy.form.count; i++) {
+                        const spread = angle + (i - (enemy.form.count - 1) / 2) * 0.24;
+                        waves.push({ x: enemy.x, y: enemy.y - 55, vx: Math.cos(spread) * enemy.form.speed,
+                            vy: Math.sin(spread) * enemy.form.speed, life: 3, delay: 0, color: enemy.form.color, kind: "shard" });
+                    }
                 }
                 sound("bounce");
             } else if (enemy.phase === "attack") {
-                const slam = isBoss && enemy.cycle % 2 === 0;
-                if (!slam) {
-                    enemy.x += enemy.facing * (isBoss ? 310 : 185) * dt;
+                const move = isBoss ? enemy.move : "charge";
+                if (move === "charge") {
+                    enemy.x += enemy.facing * (isBoss ? (enemy.type.kind === "storm" ? enemy.form.speed : 310) : 185) * dt;
                     const front = (player.x - enemy.x) * enemy.facing;
                     if (front > -enemyWidth(enemy) && front < (isBoss ? 105 : 53) && player.y > enemy.y - (isBoss ? 105 : 50) && player.y < enemy.y + 35)
                         damage(enemy.facing, false);
-                } else if (Math.abs(player.x - enemy.x) < 78 && player.y > 290) damage(Math.sign(dx) || 1, false);
+                } else if (move === "slam" && Math.abs(player.x - enemy.x) < 78 && player.y > 290) damage(Math.sign(dx) || 1, false);
                 if (enemy.timer <= 0) { enemy.phase = "recover"; enemy.timer = isBoss ? 1.25 : 0.9; }
             } else if (enemy.phase === "recover" && enemy.timer <= 0) {
                 enemy.phase = "idle";
@@ -370,7 +408,7 @@
             ghosts = ghosts.filter(g => g.life > 0);
             shake = Math.max(0, shake - dt * 22);
             if (state !== "playing") {
-                if (state === "victory" || state === "gameover") {
+                if (state === "gameover") {
                     endTime += dt;
                     if (endTime > 3.8 && !reported) { reported = true; host.gameOver(score); }
                 }
@@ -490,10 +528,12 @@
             if (state !== "playing") return;
             enemies.forEach(e => updateEnemy(e, dt));
             waves.forEach(w => {
-                w.x += w.vx * dt; w.life -= dt;
-                if (Math.abs(w.x - player.x) < 24 && player.y > 339 && player.y < 402) damage(Math.sign(w.vx), false);
+                if (w.delay > 0) { w.delay -= dt; return; }
+                w.x += w.vx * dt; w.y += w.vy * dt; w.life -= dt;
+                if (Math.abs(w.x - player.x) < 24 && player.y > w.y - 26 && player.y < w.y + 37) damage(Math.sign(w.vx), false);
             });
             waves = waves.filter(w => w.life > 0);
+            if (state !== "playing") return;
             gems.forEach(g => {
                 if (!g.taken && Math.abs(player.x - g.x) < 30 && Math.abs(player.y - 26 - g.y) < 37) {
                     g.taken = true;
@@ -503,9 +543,9 @@
                     sound(g.chest ? "perfect" : "score");
                 }
             });
-            if (state === "playing" && stage < 2 && player.x > themes[stage].length - 100) {
-                addScore(150);
-                loadStage(stage + 1, Math.min(maxHealth, player.health + 2));
+            if ((boss && boss.hp <= 0) || (!boss && player.x > themes[stage].length - 100)) {
+                if (!boss) addScore(150);
+                loadStage((stage + 1) % themes.length, Math.min(maxHealth, player.health + 2));
                 sound("match");
             }
             const visible = width / scale;
@@ -523,7 +563,7 @@
                     emit(player.x + player.facing * 65, player.y - 35, player.combo === 3 ? "#ffce86" : "#c0fff1", 3, 90, 30);
                 }
                 waves.forEach(w => {
-                    if (w.x >= camera && w.x <= camera + visible) emit(w.x, w.y - 12, "#ffb56b", 2, 70, -20);
+                    if (w.delay <= 0 && w.x >= camera && w.x <= camera + visible) emit(w.x, w.y - 12, w.color, 2, 70, -20);
                 });
                 const gate = themes[stage].length - 68;
                 if (stage < 2 && Math.abs(gate - player.x) < visible) {
@@ -635,26 +675,42 @@
             const bob = motion.matches ? 0 : Math.sin(time * 5 + e.home) * (warn ? 0.5 : 2);
             if (warn) {
                 ctx.save(); ctx.globalAlpha = 0.2 + (motion.matches ? 0 : Math.sin(time * 10) * 0.07);
-                ctx.fillStyle = "#ffb668";
-                if (big && e.cycle % 2 === 0) ctx.fillRect(e.x - 110, 359, 220, 11);
-                else ctx.fillRect(e.facing > 0 ? e.x : e.x - (big ? 205 : 100), 353, big ? 205 : 100, 17);
+                ctx.fillStyle = big ? e.form.color : "#ffb668";
+                if (big && e.move === "slam") ctx.fillRect(e.x - 110, 359, 220, 11);
+                else if (big && e.move === "volley") {
+                    line([[e.x, e.y - 55], [player.x, player.y - 28]], e.form.color, 3);
+                } else {
+                    const reach = big ? (e.type.kind === "storm" ? e.form.speed * (0.38 + e.variant * 0.06) + 105 : 210) : 100;
+                    ctx.fillRect(e.facing > 0 ? e.x : e.x - reach, 353, reach, 17);
+                }
                 ctx.restore();
             }
             ctx.save(); ctx.translate(e.x, e.y); ctx.scale(e.facing, 1);
             ellipse(0, 0, big ? 55 : 27, big ? 9 : 5, "#06131c66");
             ctx.translate(0, bob);
-            const body = e.flash > 0 ? "#fff3d0" : big ? "#91525a" : e.kind === "guard" ? "#707eae" : "#df856d";
+            const body = e.flash > 0 ? "#fff3d0" : big ? e.type.body : e.kind === "guard" ? "#707eae" : "#df856d";
             if (big) {
                 const lean = attack ? 9 : warn ? -6 : 0;
                 line([[-21, -40], [-28, -20], [-31, -5]], "#452e42", 18);
                 line([[21, -40], [28, -20], [31, -5]], "#664051", 18);
                 ellipse(lean, -57, 42, recover ? 36 : 43, body);
-                line([[-20, -77], [0, -91], [22, -77], [0, -48], [-20, -77]], "#ffc286", 4);
+                line([[-20, -77], [0, -91], [22, -77], [0, -48], [-20, -77]], e.form.color, 4);
                 ellipse(lean + 6, -94, 25, 21, "#573745");
-                line([[-14, -108], [-23, -128], [0, -117], [15, -132], [24, -108]], "#ffc98a", 6);
+                if (e.type.kind === "frost") {
+                    line([[-24, -108], [0, -143], [26, -108], [-24, -108]], e.form.color, 6);
+                } else if (e.type.kind === "storm") {
+                    line([[-20, -109], [-38, -122], [-28, -99]], e.form.color, 6);
+                    line([[20, -109], [38, -122], [28, -99]], e.form.color, 6);
+                } else line([[-14, -108], [-23, -128], [0, -117], [15, -132], [24, -108]], e.form.color, 6);
                 line([[0, -94], [10, -94]], "#fff3b4", 4);
                 line([[24, -67], [45, warn ? -95 : -48], [66, warn ? -113 : -37]], body, 17);
-                line([[60, warn ? -116 : -45], [85, warn ? -116 : -45]], "#ffd5a0", 15);
+                if (e.type.kind === "frost") {
+                    line([[68, -16], [68, -119]], e.form.color, 5);
+                    ellipse(68, -126, 11, 15, e.form.color);
+                } else if (e.type.kind === "storm") {
+                    line([[49, -45], [114, -45], [103, -54]], e.form.color, 6);
+                } else line([[60, warn ? -116 : -45], [85, warn ? -116 : -45]], e.form.color, 15);
+                for (let i = 0; i <= e.variant; i++) ellipse(-10 + i * 10, -66, 3, 4, e.form.color);
             } else if (e.kind === "guard") {
                 line([[-10, -23], [-13, -4]], "#383b60", 10);
                 line([[10, -23], [14, -4]], "#464867", 10);
@@ -675,7 +731,8 @@
                 line([[23, -28], [warn ? 15 : 30, -43]], "#ffcb88", 3);
             }
             ctx.restore();
-            if (warn) text(big && e.cycle % 2 === 0 ? "JUMP!" : "!", e.x, e.y - (big ? 155 : 82), big ? 16 : 23, "#ffe4a1", "center");
+            if (warn) text(big ? (e.move === "slam" ? "JUMP!" : e.move === "volley" ? "DODGE!" : "DASH!") : "!",
+                e.x, e.y - (big ? 155 : 82), big ? 16 : 23, "#ffe4a1", "center");
             if (recover && big) text("STRIKE!", e.x, e.y - 149, 14, "#c0ffe0", "center");
             if (!big && e.hp < e.maxHp) {
                 ctx.fillStyle = "#162b36"; ctx.fillRect(e.x - 23, e.y - 66, 46, 4);
@@ -804,12 +861,15 @@
                 ctx.fillStyle = `${theme.glow}25`; ctx.fillRect(gate - 25, 285, 50, 80);
                 text("NEXT →", gate, 253, 15, theme.glow, "center");
             } else {
-                text("EMBER CROWN", 2360, 168, 22, "#ffca95", "center");
+                text(boss.form.name.toUpperCase(), 2360, 168, 22, boss.form.color, "center");
                 line([[2180, 370], [2180, 190]], "#d78a6933", 4);
                 line([[2540, 370], [2540, 190]], "#d78a6933", 4);
             }
             waves.forEach(w => {
-                line([[w.x - 19, w.y], [w.x - 8, w.y - 14], [w.x + 1, w.y - 30], [w.x + 10, w.y - 9], [w.x + 20, w.y]], "#ffd194", 5);
+                if (w.delay > 0) return;
+                if (w.kind === "shard") {
+                    line([[w.x - 12, w.y], [w.x, w.y - 14], [w.x + 12, w.y], [w.x, w.y + 10], [w.x - 12, w.y]], w.color, 4);
+                } else line([[w.x - 19, w.y], [w.x - 8, w.y - 14], [w.x + 1, w.y - 30], [w.x + 10, w.y - 9], [w.x + 20, w.y]], w.color, 5);
             });
             enemies.forEach(e => { if (e.x > left && e.x < right) drawEnemy(e); });
             ghosts.forEach(g => drawKnight(g, g.life / 0.22 * 0.22));
@@ -831,7 +891,7 @@
             const heartSize = width < 380 ? 13 : 15;
             for (let i = 0; i < maxHealth; i++) text("♥", 13 + i * (heartSize + 2), 20, heartSize, i < player.health ? "#f89582" : "#445361");
             text(`${score} ✦`, width - 13, 20, 17, "#ffdd94", "right");
-            text(`${stage + 1}/3  ${themes[stage].name}`, 13, 44, width < 370 ? 11 : 13, "#c3d5dc");
+            text(`R${bossesDefeated + 1} · ${stage + 1}/3  ${themes[stage].name}`, 13, 44, width < 370 ? 10 : 12, "#c3d5dc");
             const barWidth = Math.min(84, width * 0.23);
             ctx.fillStyle = "#34485b"; ctx.fillRect(width - barWidth - 14, 40, barWidth, 6);
             ctx.fillStyle = "#a6ecd5";
@@ -841,12 +901,13 @@
             if (boss && boss.hp > 0 && player.x > 1920) {
                 const bw = Math.min(width - 44, 350);
                 ctx.fillStyle = "#211a2de6"; ctx.fillRect((width - bw) / 2, 77, bw, 33);
-                text("CINDER REGENT", width / 2, 87, 10, "#ffd1a3", "center");
+                text(boss.form.name.toUpperCase(), width / 2, 87, 10, boss.form.color, "center");
                 ctx.fillStyle = "#613c50"; ctx.fillRect((width - bw) / 2 + 8, 98, bw - 16, 5);
-                ctx.fillStyle = "#f8ad83"; ctx.fillRect((width - bw) / 2 + 8, 98, (bw - 16) * Math.max(0, boss.hp / boss.maxHp), 5);
+                ctx.fillStyle = boss.form.color; ctx.fillRect((width - bw) / 2 + 8, 98, (bw - 16) * Math.max(0, boss.hp / boss.maxHp), 5);
             } else if (banner > 0 && state === "playing") {
                 ctx.fillStyle = "#102431cc"; ctx.fillRect(width * 0.1, 80, width * 0.8, 42);
-                text(stage === 0 ? "Find the crown. Wake the light." : "Checkpoint • +2 hearts", width / 2, 94, 12, "#f9e5bc", "center");
+                text(stage === 0 ? (bossesDefeated ? `Boss defeated! Round ${bossesDefeated + 1} • +2 hearts` : "Nine bosses. An endless adventure.") :
+                    "Checkpoint • +2 hearts", width / 2, 94, 12, "#f9e5bc", "center");
                 text(kids ? "KIDS MODE • extra hearts & slower warnings" : "Chests heal • third slash breaks armor", width / 2, 111, 10, "#c7dcd9", "center");
             }
         }
@@ -874,7 +935,7 @@
                 text("A NEW SHELL. A NEW LEGEND.", center, base, 10, "#9ad2c9", "center");
                 text("SHELL KNIGHT II", center, base + 37, Math.min(32, width / 12), "#f7e9c6", "center");
                 text("E M B E R W A K E", center, base + 68, 15, "#f5a787", "center");
-                text("Three lands. One stolen sunrise.", center, base + 104, 12, "#b6d0d7", "center");
+                text("Nine bosses. Endless rounds. Keep your hearts!", center, base + 104, 12, "#b6d0d7", "center");
                 text("Swipe & hold to move • flick sideways to dash", center, base + 135, 11, "#e0e8dc", "center");
                 text("Swipe up to jump ×2 • down to shell / air slam", center, base + 155, 11, "#e0e8dc", "center");
                 text("Tap anywhere to slash • hold for a 3-hit combo", center, base + 179, 10, "#b0d9d0", "center");
@@ -886,8 +947,8 @@
                 text("TAP ANYWHERE TO BEGIN", center, by, 11, "#183a3b", "center");
                 ctx.restore();
             } else {
-                text(state === "victory" ? "THE SUNRISE RETURNS" : "REST, BRAVE KNIGHT", center, sceneHeight * 0.34, Math.min(25, width / 15), "#ffe0a5", "center");
-                text(state === "victory" ? "Emberwake is free. Your shell is legend." : "Every great adventure takes another try.", center, sceneHeight * 0.46, 11, "#c1d9df", "center");
+                text("REST, BRAVE KNIGHT", center, sceneHeight * 0.34, Math.min(25, width / 15), "#ffe0a5", "center");
+                text(`${bossesDefeated} bosses defeated • Round ${bossesDefeated + 1}`, center, sceneHeight * 0.46, 11, "#c1d9df", "center");
                 text(`${score} TREASURE`, center, sceneHeight * 0.57, 22, "#fbcd83", "center");
                 text("Your next adventure awaits…", center, sceneHeight * 0.7 + 18, 12, "#bddfc5", "center");
                 text("Score saved by the arcade in a moment…", center, sceneHeight * 0.9, 10, "#9bbacb", "center");
@@ -959,7 +1020,7 @@
         id: "shellknight2",
         name: "Shell Knight II",
         emoji: "🐢",
-        tag: "Emberwake: dash, double-jump & sword-combo through three magical lands.",
+        tag: "Emberwake: three lands, nine bosses, endless rounds. Keep your hearts!",
         scoreLabel: "treasure",
         create
     };
