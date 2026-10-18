@@ -67,7 +67,7 @@ Games are displayed in the order defined by `GAME_ORDER` in `js/app.js:11`.
 | `stormquest` | Storm Quest | ⚡ | points | Aim lightning, roll to dodge & slay the Storm Titan. |
 | `digger` | Deep Digger | ⛏️ | coins | Dig for treasure, then upgrade your gear at the shop. |
 | `turtlecave` | Shell Knight | 🐢 | treasure | Sword turtle cave-crawl: swipe to move & dash, tap to slash, beat the boss! |
-| `shellknight2` | Shell Knight II | 🐢 | treasure | Emberwake: dash, double-jump & sword-combo through three magical lands. |
+| `shellknight2` | Shell Knight II | 🐢 | treasure | Emberwake: three lands, nine bosses, endless rounds. Keep your hearts! |
 
 ### Shell Knight II — Emberwake
 
@@ -83,6 +83,22 @@ On a keyboard, move with **A/D** or **Left/Right**, jump with **Space/W/Up**, sl
 Kids Mode provides extra health and more forgiving enemy timing. Each land has its own
 weather, lighting, and scenery, with trails and impact particles; reduced-motion settings
 disable drifting ambiance and continuous trails and reduce impact bursts.
+
+The three lands repeat endlessly: defeating a boss starts the next round, preserving treasure
+and restoring up to two hearts, just like other land checkpoints. The run ends only when all
+hearts are lost. The HUD tracks the round and current land.
+
+Each round ends with one of three boss types, each with three variations:
+- **Cinder Regents:** Cinder, Blaze, and Sunfire alternate charges with increasingly fast,
+  repeated ground-wave bursts. Jump over the waves.
+- **Frost Oracles:** Rime, Glacier, and Blizzard fire aimed volleys of one, two, or three ice
+  shards between ground slams. Dodge the targeting line.
+- **Storm Lancers:** Thunder, Tempest, and Cyclone use progressively faster, longer charges
+  between ground slams. Dash through attacks or jump clear.
+
+Encounters rotate Cinder → Frost → Storm, advancing the variation after each trio.
+All nine appear before the sequence repeats, without unbounded health or speed increases.
+Attack warnings and recovery windows remain available in every round, including Kids Mode.
 
 ---
 
