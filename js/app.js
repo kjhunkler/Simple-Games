@@ -12,7 +12,7 @@
         "snake", "astro", "piestack", "flappy", "moles", "memory",
         "echo", "bricks", "hopper", "fruit", "tiles", "colorrush",
         "beatloop", "taptiles", "stopspin", "lanedash", "stormquest", "sentry",
-        "bughunt", "digger", "catcher", "turtlecave", "shellknight2", "abctrace", "lettersiege",
+        "bughunt", "digger", "catcher", "turtlecave", "shellknight2", "abctrace", "lettersiege", "numbersense",
         "watchswap"
     ];
 
@@ -29,7 +29,7 @@
         bricks: "classic", fruit: "classic", stopspin: "classic", sentry: "classic",
         bughunt: "classic", catcher: "classic", watchswap: "classic",
         memory: "puzzle", echo: "puzzle", tiles: "puzzle", colorrush: "puzzle", beatloop: "puzzle",
-        abctrace: "learning", lettersiege: "learning",
+        abctrace: "learning", lettersiege: "learning", numbersense: "learning",
         flappy: "scroller", hopper: "scroller", taptiles: "scroller", lanedash: "scroller",
         stormquest: "scroller", digger: "scroller", turtlecave: "scroller", shellknight2: "scroller"
     };

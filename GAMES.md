@@ -56,6 +56,21 @@ Games are displayed in the order defined by `GAME_ORDER` in `js/app.js:11`.
 |----|------|-------|------------|-----|
 | `abctrace` | ABC Trace | ✏️ | letters | Trace each letter A–Z and hear it spoken. |
 | `lettersiege` | Letter Siege | 🤖 | defenses | Spot the letter to blast the robot and save the city! |
+| `numbersense` | Number Sense | 🔢 | activities | Count together, find the total, and grow to 30! |
+
+Number Sense starts with a selectable **1–5 warm-up**, then progresses through
+1–10, 11–20, and 21–30. The menu also allows jumping straight to any range or
+the guided 1–30 finale. Tap each dot once, choose the total, then complete a
+number sequence; the final round in each larger range practices 9→10, 19→20,
+or 29→30. Larger collections use successive ten-frames with visible group
+counts, keeping touch targets large. Use the arrow to advance at your own pace.
+
+There are no timers, lives, or penalties. Kids Mode highlights hints; incorrect
+answers offer the same help without reducing progress. Scores count completed
+activities, not individual taps or speed, and use the existing per-profile
+best-score storage. The speaker button repeats the current prompt or number.
+Speech respects the sound setting and is optional; offline narration depends
+on device voices. All activities remain playable visually without speech.
 
 ### Scroller
 | ID | Name | Emoji | Score unit | Tag |
